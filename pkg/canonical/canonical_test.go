@@ -61,9 +61,9 @@ func TestHASH001_NestedKeyOrderEquivalence(t *testing.T) {
 	}
 
 	if hashA != hashB {
-		t.Errorf("HASH-001 FAILED: Nested objects with different key order produced different hashes\n"+
+		t.Errorf("HASH-001 FAILED: Nested objects with different key order produced different hashes\n" +
 			"  Expected: identical hashes (nested keys should also be sorted)",
-			)
+		)
 	}
 }
 
@@ -84,9 +84,9 @@ func TestHASH001_ArrayOrderPreserved(t *testing.T) {
 	}
 
 	if hashA == hashB {
-		t.Errorf("HASH-001 FAILED: Arrays with different order produced same hash\n"+
-			"  objA items: [1,2,3]\n"+
-			"  objB items: [3,2,1]\n"+
+		t.Errorf("HASH-001 FAILED: Arrays with different order produced same hash\n" +
+			"  objA items: [1,2,3]\n" +
+			"  objB items: [3,2,1]\n" +
 			"  Expected: different hashes (array order must be preserved)")
 	}
 }
@@ -172,9 +172,9 @@ func TestCanonical_UTF8Encoding(t *testing.T) {
 	// - Inconsistent handling of unicode
 
 	// Test with various unicode characters
-	objA := map[string]any{"name": "日本語"}      // Japanese
-	objB := map[string]any{"name": "日本語"}      // Same Japanese (should match)
-	objC := map[string]any{"emoji": "🚀🔥"}      // Emoji
+	objA := map[string]any{"name": "日本語"}       // Japanese
+	objB := map[string]any{"name": "日本語"}       // Same Japanese (should match)
+	objC := map[string]any{"emoji": "🚀🔥"}       // Emoji
 	objD := map[string]any{"mixed": "Hello 世界"} // Mixed ASCII and Chinese
 
 	hashA, errA := canonical.ArgsHash(objA)
