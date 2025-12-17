@@ -402,3 +402,211 @@ func TestEVT002_CallFields(t *testing.T) {
 		t.Errorf("EVT-002 FAILED: call.seq wrong value, got %v", call["seq"])
 	}
 }
+
+// =============================================================================
+// EVT-004: run_id Identity
+// Contract: run_id MUST be globally unique per run and present in every event
+// Reference: Interface-Pack.md §0.3, §1.3, Contract-Test-Checklist.md EVT-004
+// =============================================================================
+
+func TestEVT004_RunIDPresent(t *testing.T) {
+	// Every serialized event must have run_id field present
+	evt := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:       "0.1.0",
+			Type:    event.EventTypeToolCallStart,
+			TS:      "2025-01-15T12:00:00.000Z",
+			RunID:   "run_evt004_present",
+			AgentID: "agent_evt004",
+			Client:  event.ClientClaude,
+			Env:     event.EnvDev,
+			Source: event.Source{
+				HostID: "host_evt004",
+				ProcID: "proc_evt004",
+				ShimID: "shim_evt004",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_evt004",
+			ServerName: "server",
+			ToolName:   "tool",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash",
+			BytesIn:    100,
+			Seq:        1,
+		},
+	}
+
+	output, err := event.SerializeEvent(evt)
+	if err != nil {
+		t.Fatalf("SerializeEvent returned error: %v", err)
+	}
+
+	// Parse the JSON output
+	jsonPart := bytes.TrimSuffix(output, []byte("\n"))
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+		t.Fatalf("Failed to parse output as JSON: %v", err)
+	}
+
+	// Check run_id field exists
+	if _, exists := parsed["run_id"]; !exists {
+		t.Errorf("EVT-004 FAILED: Missing required field 'run_id'\n"+
+			"  Per Interface-Pack §1.3, run_id is a REQUIRED field in every event")
+	}
+}
+
+func TestEVT004_RunIDNonEmpty(t *testing.T) {
+	// run_id must never be an empty string
+	evt := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:       "0.1.0",
+			Type:    event.EventTypeToolCallStart,
+			TS:      "2025-01-15T12:00:00.000Z",
+			RunID:   "run_evt004_nonempty_12345",
+			AgentID: "agent_evt004_ne",
+			Client:  event.ClientCodex,
+			Env:     event.EnvCI,
+			Source: event.Source{
+				HostID: "host_ne",
+				ProcID: "proc_ne",
+				ShimID: "shim_ne",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_ne",
+			ServerName: "server",
+			ToolName:   "tool",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash",
+			BytesIn:    200,
+			Seq:        1,
+		},
+	}
+
+	output, err := event.SerializeEvent(evt)
+	if err != nil {
+		t.Fatalf("SerializeEvent returned error: %v", err)
+	}
+
+	// Parse the JSON output
+	jsonPart := bytes.TrimSuffix(output, []byte("\n"))
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+		t.Fatalf("Failed to parse output: %v", err)
+	}
+
+	// Check run_id is not empty
+	runID, ok := parsed["run_id"].(string)
+	if !ok {
+		t.Fatalf("EVT-004 FAILED: run_id is not a string")
+	}
+	if runID == "" {
+		t.Errorf("EVT-004 FAILED: run_id is an empty string\n"+
+			"  Per Interface-Pack §0.3, run_id MUST be globally unique (cannot be empty)")
+	}
+}
+
+func TestEVT004_RunIDConsistent(t *testing.T) {
+	// Events in the same run must share the same run_id
+	sharedRunID := "run_evt004_consistent_shared_abc123"
+
+	evt1 := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:       "0.1.0",
+			Type:    event.EventTypeToolCallStart,
+			TS:      "2025-01-15T12:00:00.000Z",
+			RunID:   sharedRunID,
+			AgentID: "agent_consistent",
+			Client:  event.ClientClaude,
+			Env:     event.EnvProd,
+			Source: event.Source{
+				HostID: "host_cons",
+				ProcID: "proc_cons",
+				ShimID: "shim_cons",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_001",
+			ServerName: "server_a",
+			ToolName:   "tool_a",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash_a",
+			BytesIn:    100,
+			Seq:        1,
+		},
+	}
+
+	evt2 := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:       "0.1.0",
+			Type:    event.EventTypeToolCallStart,
+			TS:      "2025-01-15T12:00:01.000Z",
+			RunID:   sharedRunID, // Same run_id
+			AgentID: "agent_consistent",
+			Client:  event.ClientClaude,
+			Env:     event.EnvProd,
+			Source: event.Source{
+				HostID: "host_cons",
+				ProcID: "proc_cons",
+				ShimID: "shim_cons",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_002",
+			ServerName: "server_b",
+			ToolName:   "tool_b",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash_b",
+			BytesIn:    200,
+			Seq:        2,
+		},
+	}
+
+	// Serialize both events
+	output1, err := event.SerializeEvent(evt1)
+	if err != nil {
+		t.Fatalf("SerializeEvent(evt1) returned error: %v", err)
+	}
+
+	output2, err := event.SerializeEvent(evt2)
+	if err != nil {
+		t.Fatalf("SerializeEvent(evt2) returned error: %v", err)
+	}
+
+	// Parse both outputs
+	jsonPart1 := bytes.TrimSuffix(output1, []byte("\n"))
+	var parsed1 map[string]any
+	if err := json.Unmarshal(jsonPart1, &parsed1); err != nil {
+		t.Fatalf("Failed to parse output1: %v", err)
+	}
+
+	jsonPart2 := bytes.TrimSuffix(output2, []byte("\n"))
+	var parsed2 map[string]any
+	if err := json.Unmarshal(jsonPart2, &parsed2); err != nil {
+		t.Fatalf("Failed to parse output2: %v", err)
+	}
+
+	// Extract run_id from both events
+	runID1, ok1 := parsed1["run_id"].(string)
+	runID2, ok2 := parsed2["run_id"].(string)
+
+	if !ok1 || !ok2 {
+		t.Fatalf("EVT-004 FAILED: run_id is not a string in one or both events")
+	}
+
+	// Verify both have the same run_id
+	if runID1 != runID2 {
+		t.Errorf("EVT-004 FAILED: Events in the same run have different run_id values\n"+
+			"  Per Interface-Pack §0.3, run_id MUST be consistent within a run\n"+
+			"  Event 1 run_id: %s\n"+
+			"  Event 2 run_id: %s", runID1, runID2)
+	}
+
+	// Verify they match the expected value
+	if runID1 != sharedRunID {
+		t.Errorf("EVT-004 FAILED: run_id does not match expected value\n"+
+			"  Expected: %s\n"+
+			"  Got:      %s", sharedRunID, runID1)
+	}
+}
