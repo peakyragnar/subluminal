@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -49,8 +50,9 @@ type TestHarness struct {
 	directPipes *directPipes
 
 	// State
-	running bool
-	mu      sync.Mutex
+	running   bool
+	mu        sync.Mutex
+	captureWg sync.WaitGroup // Tracks event capture goroutine
 }
 
 // HarnessConfig configures the test harness.
@@ -190,7 +192,11 @@ func (h *TestHarness) startWithShim() error {
 	}
 
 	// Start event capture from stderr (where shim emits events)
-	go h.EventSink.Capture(shimStderr)
+	h.captureWg.Add(1)
+	go func() {
+		defer h.captureWg.Done()
+		h.EventSink.Capture(shimStderr)
+	}()
 
 	// Start shim (shim will spawn fakemcp as its upstream)
 	if err := h.shimCmd.Start(); err != nil {
@@ -223,7 +229,11 @@ func (h *TestHarness) getFakeMCPPath() string {
 	if p := os.Getenv("SUBLUMINAL_FAKEMCP_PATH"); p != "" {
 		return p
 	}
-	// Default: relative to shim binary
+	// Default: same directory as shim binary
+	if h.config.ShimPath != "" {
+		shimDir := filepath.Dir(h.config.ShimPath)
+		return filepath.Join(shimDir, "fakemcp")
+	}
 	return "./bin/fakemcp"
 }
 
@@ -281,6 +291,9 @@ func (h *TestHarness) Stop() error {
 		case <-time.After(h.config.Timeout):
 			h.shimCmd.Process.Kill()
 		}
+
+		// Wait for event capture goroutine to finish reading stderr
+		h.captureWg.Wait()
 	}
 
 	// Close direct mode pipes

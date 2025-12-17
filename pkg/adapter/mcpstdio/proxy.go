@@ -106,15 +106,19 @@ func (p *Proxy) Run() error {
 		p.readFromUpstream()
 	}()
 
-	// Wait for EITHER to complete - not both
-	// If upstream dies, we exit even if agent stdin is still open
-	// If agent closes stdin, upstream will see EOF and exit
+	// Wait for EITHER to complete first
+	// The completion path determines whether we need to wait for the other side
 	select {
 	case <-agentDone:
+		// Agent closed stdin - wait for upstream to finish draining responses
+		// This ensures all tool_call_end events are emitted before run_end
+		<-upstreamDone
 	case <-upstreamDone:
+		// Upstream exited (normal exit or crash) - don't wait for agent
+		// Agent may still have stdin open; we can't block on that
 	}
 
-	// Emit run_end
+	// Emit run_end (guaranteed to be last for the events we can emit)
 	p.emitRunEnd()
 
 	return nil
