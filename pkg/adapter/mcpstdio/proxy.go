@@ -299,12 +299,31 @@ func (p *Proxy) emitRunStart() {
 
 func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int, args map[string]any, seq int) {
 	// Create preview (truncated args)
+	// Per Interface-Pack §1.10:
+	// - For small payloads: include full preview
+	// - For medium payloads (>1KB but <1MiB): include truncated preview with "..."
+	// - For large payloads (>1MiB): omit preview entirely, set truncated=true
+	const maxPreviewSize = 1024
+	const maxInspectBytes = 1024 * 1024 // 1 MiB
+
 	argsPreview := ""
+	truncated := false
+
 	if args != nil {
 		if b, err := json.Marshal(args); err == nil {
-			argsPreview = string(b)
-			if len(argsPreview) > 1024 {
-				argsPreview = argsPreview[:1024] + "..."
+			originalLen := len(b)
+			if originalLen > maxInspectBytes {
+				// Very large payload - omit preview
+				argsPreview = ""
+				truncated = true
+			} else if originalLen > maxPreviewSize {
+				// Medium payload - truncate with "..."
+				argsPreview = string(b[:maxPreviewSize]) + "..."
+				truncated = true
+			} else {
+				// Small payload - full preview
+				argsPreview = string(b)
+				truncated = false
 			}
 		}
 	}
@@ -319,7 +338,7 @@ func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int
 			ArgsHash:   argsHash,
 			BytesIn:    bytesIn,
 			Preview: event.Preview{
-				Truncated:   len(argsPreview) > 1024,
+				Truncated:   truncated,
 				ArgsPreview: argsPreview,
 			},
 			Seq: seq,

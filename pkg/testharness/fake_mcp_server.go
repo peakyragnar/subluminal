@@ -147,6 +147,8 @@ func (s *FakeMCPServer) GetCalls() []ToolCallParams {
 // Typically: Run(os.Stdin, os.Stdout)
 func (s *FakeMCPServer) Run(r io.Reader, w io.Writer) error {
 	scanner := bufio.NewScanner(r)
+	// Increase buffer size to handle large payloads (up to 10 MiB)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()

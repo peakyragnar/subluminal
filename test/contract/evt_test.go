@@ -356,6 +356,9 @@ func TestEVT007_LatencyMSPresentAndSane(t *testing.T) {
 	h.Initialize()
 	h.CallTool("slow_tool", nil)
 
+	// Stop the harness to ensure all events are captured
+	h.Stop()
+
 	// Assert: tool_call_end has latency_ms >= 200 (or reasonable)
 	toolCallEnds := h.EventSink.ByType("tool_call_end")
 	if len(toolCallEnds) == 0 {
@@ -410,6 +413,9 @@ func TestEVT008_StatusErrorClassTaxonomy(t *testing.T) {
 	// Execute: Call the error tool
 	h.Initialize()
 	h.CallTool("error_tool", nil)
+
+	// Stop the harness to ensure all events are captured
+	h.Stop()
 
 	// Assert: tool_call_end has status=ERROR with proper error.class
 	toolCallEnds := h.EventSink.ByType("tool_call_end")
@@ -494,6 +500,9 @@ func TestEVT009_RunEndSummaryCountsCorrect(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		h.CallTool("allowed_tool", nil)
 	}
+
+	// Stop the harness to trigger run_end event
+	h.Stop()
 
 	// Get run_end event
 	runEnds := h.EventSink.ByType("run_end")

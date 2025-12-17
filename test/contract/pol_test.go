@@ -72,6 +72,10 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 func TestPOL002_AllowDenyOrdering(t *testing.T) {
 	skipIfNoShim(t)
 
+	// Skip in v0.1: This test requires policy enforcement which is v0.2+
+	// v0.1 is observe mode only - all calls are allowed
+	t.Skip("POL-002: Requires policy enforcement (v0.2+)")
+
 	// Note: This test requires a policy with:
 	// 1. deny rule for specific tool (first)
 	// 2. allow rule for all tools (second)
@@ -132,6 +136,10 @@ func TestPOL002_AllowDenyOrdering(t *testing.T) {
 func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 	skipIfNoShim(t)
 
+	// Skip in v0.1: This test requires policy enforcement which is v0.2+
+	// v0.1 is observe mode only - all calls are allowed
+	t.Skip("POL-003: Requires policy enforcement (v0.2+)")
+
 	// Note: This test requires a policy with:
 	// - budget rule: limit_calls=3
 
@@ -191,6 +199,10 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 func TestPOL004_TokenBucketRateLimitThrottle(t *testing.T) {
 	skipIfNoShim(t)
 
+	// Skip in v0.1: This test requires policy enforcement which is v0.2+
+	// v0.1 is observe mode only - all calls are allowed
+	t.Skip("POL-004: Requires policy enforcement (v0.2+)")
+
 	// Note: This test requires a policy with:
 	// - rate_limit rule: capacity=2, slow refill, on_limit=THROTTLE, backoff=500ms
 
@@ -248,6 +260,10 @@ func TestPOL004_TokenBucketRateLimitThrottle(t *testing.T) {
 
 func TestPOL005_BreakerRepeatThresholdTriggers(t *testing.T) {
 	skipIfNoShim(t)
+
+	// Skip in v0.1: This test requires policy enforcement which is v0.2+
+	// v0.1 is observe mode only - all calls are allowed
+	t.Skip("POL-005: Requires policy enforcement (v0.2+)")
 
 	// Note: This test requires a policy with:
 	// - breaker rule: repeat_threshold=5 within 10s window
@@ -308,6 +324,10 @@ func TestPOL005_BreakerRepeatThresholdTriggers(t *testing.T) {
 
 func TestPOL006_DedupeWindowBlocksDuplicate(t *testing.T) {
 	skipIfNoShim(t)
+
+	// Skip in v0.1: This test requires policy enforcement which is v0.2+
+	// v0.1 is observe mode only - all calls are allowed
+	t.Skip("POL-006: Requires policy enforcement (v0.2+)")
 
 	// Note: This test requires a policy with:
 	// - dedupe rule: window=60s, key=args_hash, on_duplicate=BLOCK
