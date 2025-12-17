@@ -145,18 +145,24 @@ func (h *TestHarness) startDirect() error {
 }
 
 // startWithShim starts the real shim process.
+// The shim spawns its own upstream MCP server (fakemcp) as a subprocess.
 func (h *TestHarness) startWithShim() error {
-	// Create pipes for fake server
-	serverFromShim, shimToServer := io.Pipe()
-	shimFromServer, serverToShim := io.Pipe()
+	// Get tool names from the fake server config
+	toolNames := h.getToolNames()
 
-	// Start fake server
-	go func() {
-		h.FakeServer.Run(serverFromShim, serverToShim)
-	}()
+	// Build shim args: --server-name=test -- ./bin/fakemcp --tools=tool1,tool2
+	args := append([]string{}, h.config.ShimArgs...)
+	if !hasServerName(args) {
+		args = append(args, "--server-name=test")
+	}
+	args = append(args, "--")
+	args = append(args, h.getFakeMCPPath())
+	if len(toolNames) > 0 {
+		args = append(args, "--tools="+joinTools(toolNames))
+	}
 
 	// Start shim process
-	h.shimCmd = exec.Command(h.config.ShimPath, h.config.ShimArgs...)
+	h.shimCmd = exec.Command(h.config.ShimPath, args...)
 	h.shimCmd.Env = append(os.Environ(), h.config.ShimEnv...)
 
 	// Connect shim stdin/stdout
@@ -180,12 +186,7 @@ func (h *TestHarness) startWithShim() error {
 	// Start event capture from stderr (where shim emits events)
 	go h.EventSink.Capture(shimStderr)
 
-	// Connect shim to fake server
-	// Shim's "upstream" connection goes to fake server
-	go io.Copy(shimToServer, h.shimStdout)  // shim stdout → fake server stdin
-	go io.Copy(h.shimStdin, shimFromServer) // fake server stdout → shim stdin
-
-	// Start shim
+	// Start shim (shim will spawn fakemcp as its upstream)
 	if err := h.shimCmd.Start(); err != nil {
 		return fmt.Errorf("failed to start shim: %w", err)
 	}
@@ -196,6 +197,50 @@ func (h *TestHarness) startWithShim() error {
 
 	h.running = true
 	return nil
+}
+
+// getToolNames extracts tool names from the fake server.
+func (h *TestHarness) getToolNames() []string {
+	if h.FakeServer == nil {
+		return nil
+	}
+	names := make([]string, len(h.FakeServer.Tools))
+	for i, t := range h.FakeServer.Tools {
+		names[i] = t.Name
+	}
+	return names
+}
+
+// getFakeMCPPath returns the path to the fakemcp binary.
+func (h *TestHarness) getFakeMCPPath() string {
+	// Check environment override
+	if p := os.Getenv("SUBLUMINAL_FAKEMCP_PATH"); p != "" {
+		return p
+	}
+	// Default: relative to shim binary
+	return "./bin/fakemcp"
+}
+
+// hasServerName checks if --server-name is already in args.
+func hasServerName(args []string) bool {
+	for _, arg := range args {
+		if len(arg) > 13 && arg[:13] == "--server-name" {
+			return true
+		}
+	}
+	return false
+}
+
+// joinTools joins tool names with commas.
+func joinTools(tools []string) string {
+	result := ""
+	for i, t := range tools {
+		if i > 0 {
+			result += ","
+		}
+		result += t
+	}
+	return result
 }
 
 // Stop shuts down all components and cleans up.

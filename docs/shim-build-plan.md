@@ -43,6 +43,15 @@ pkg/adapter/mcpstdio/
 
 ## Implementation Phases
 
+### Phase 0: Event Types (Prerequisite)
+**File:** `pkg/event/types.go`
+
+The existing `pkg/event/types.go` only has `ToolCallStartEvent`. Add the remaining event types:
+- `RunStartEvent` - run_start with run.started_at, mode, policy info
+- `ToolCallDecisionEvent` - tool_call_decision with decision.action, rule_id, severity, explain
+- `ToolCallEndEvent` - tool_call_end with status, latency_ms, bytes_out, preview
+- `RunEndEvent` - run_end with run.ended_at, status, summary counts
+
 ### Phase 1: Core Infrastructure
 **Files:** `cmd/shim/main.go`, `pkg/core/identity.go`, `pkg/core/emitter.go`
 
@@ -52,9 +61,10 @@ pkg/adapter/mcpstdio/
    - Env vars: SUB_RUN_ID, SUB_AGENT_ID, SUB_CLIENT, SUB_ENV
 
 2. Identity generation:
-   - Generate ULID for run_id if not provided
-   - Generate UUIDs for host_id, proc_id, shim_id
+   - Generate UUID v4 for run_id if SUB_RUN_ID not set (no external deps needed)
+   - Generate UUID v4s for host_id, proc_id, shim_id via crypto/rand
    - Read identity from env vars with defaults
+   - Note: Interface-Pack §0.3 says "format is arbitrary but SHOULD be ULID/UUIDv7-style" - UUID v4 is acceptable
 
 3. Async event emitter:
    - Buffered channel (1000 events)
@@ -123,29 +133,35 @@ pkg/adapter/mcpstdio/
    - `run_end` on shutdown
 
 ### Phase 5: Test Harness Fix
-**File:** `pkg/testharness/harness.go`
+**Files:** `pkg/testharness/harness.go`, `cmd/fakemcp/main.go`
 
-The current harness has a wiring bug (shimStdout used twice). Fix `startWithShim()`:
-- Pass upstream command to shim via args: `--upstream-cmd`
-- Shim spawns its own fake server process
-- OR: Use a socket/pipe approach
+The current harness has a wiring bug (shimStdout used twice). Fix by creating a standalone fake MCP server binary:
 
-Simpler fix: Create a wrapper script that the harness can pass to shim as upstream.
+1. Create `cmd/fakemcp/main.go`:
+   - Wraps `pkg/testharness.FakeMCPServer` as standalone binary
+   - Accepts `--tools=tool1,tool2` flag to specify available tools
+   - Reads JSON-RPC from stdin, writes responses to stdout
+
+2. Update `startWithShim()` in harness.go:
+   - Build shim args: `--server-name=test -- ./bin/fakemcp --tools=tool1,tool2`
+   - Shim spawns fakemcp as its upstream subprocess
+   - Harness connects to shim's stdin/stdout/stderr
+   - No more manual pipe wiring between shim and server
 
 ## Critical Files to Modify/Create
 
 | File | Action | Purpose |
 |------|--------|---------|
+| `pkg/event/types.go` | Modify | Add RunStartEvent, ToolCallDecisionEvent, ToolCallEndEvent, RunEndEvent |
 | `cmd/shim/main.go` | Create | Entry point |
-| `pkg/core/core.go` | Create | Enforcement core |
 | `pkg/core/emitter.go` | Create | Event emission |
 | `pkg/core/identity.go` | Create | Identity generation |
 | `pkg/core/state.go` | Create | Run state tracking |
-| `pkg/adapter/mcpstdio/adapter.go` | Create | MCP adapter |
 | `pkg/adapter/mcpstdio/jsonrpc.go` | Create | JSON-RPC types |
 | `pkg/adapter/mcpstdio/proxy.go` | Create | Bidirectional proxy |
 | `pkg/adapter/mcpstdio/process.go` | Create | Process management |
-| `pkg/testharness/harness.go` | Modify | Fix shim wiring |
+| `cmd/fakemcp/main.go` | Create | Standalone fake MCP server for testing |
+| `pkg/testharness/harness.go` | Modify | Fix shim wiring to use subprocess spawning |
 
 ## Existing Code to Use
 
@@ -209,7 +225,11 @@ SUB_AGENT_ID=repo-fixer SUB_ENV=ci ./bin/shim --server-name=git -- git-mcp-serve
 ## Build Command
 
 ```bash
+# Build shim
 go build -o bin/shim ./cmd/shim
+
+# Build fake MCP server for testing
+go build -o bin/fakemcp ./cmd/fakemcp
 ```
 
 ## Success Criteria
