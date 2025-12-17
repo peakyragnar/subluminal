@@ -13,7 +13,8 @@
 // WHY CANONICALIZATION:
 // Without canonicalization, {"a":1,"b":2} and {"b":2,"a":1} would produce different
 // hashes even though they represent the same data. Canonicalization ensures:
-//   Same data → Same canonical form → Same hash (always)
+//
+//	Same data → Same canonical form → Same hash (always)
 //
 // CONTRACT REQUIREMENTS (Interface-Pack.md §1.9.1):
 // - UTF-8 encoding
