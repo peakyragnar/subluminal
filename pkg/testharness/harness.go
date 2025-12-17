@@ -67,6 +67,9 @@ type HarnessConfig struct {
 
 	// Timeout is how long to wait for operations.
 	Timeout time.Duration
+
+	// CrashOn makes fakemcp exit(1) when this tool is called (simulates crash).
+	CrashOn string
 }
 
 // directPipes connects driver directly to fake server (no shim).
@@ -159,6 +162,9 @@ func (h *TestHarness) startWithShim() error {
 	args = append(args, h.getFakeMCPPath())
 	if len(toolNames) > 0 {
 		args = append(args, "--tools="+joinTools(toolNames))
+	}
+	if h.config.CrashOn != "" {
+		args = append(args, "--crash-on="+h.config.CrashOn)
 	}
 
 	// Start shim process

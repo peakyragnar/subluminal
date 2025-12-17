@@ -53,7 +53,6 @@ type Proxy struct {
 	// Shutdown coordination
 	done      chan struct{}
 	closeOnce sync.Once
-	wg        sync.WaitGroup
 }
 
 // pendingCall tracks a tool call waiting for response.
@@ -89,18 +88,31 @@ func NewProxy(
 }
 
 // Run starts the proxy and blocks until completion.
-// Returns when stdin closes or an error occurs.
+// Returns when stdin closes OR upstream exits (whichever comes first).
 func (p *Proxy) Run() error {
 	// Emit run_start
 	p.emitRunStart()
 
-	// Start goroutines
-	p.wg.Add(2)
-	go p.readFromAgent()
-	go p.readFromUpstream()
+	// Start goroutines with individual completion channels
+	agentDone := make(chan struct{})
+	upstreamDone := make(chan struct{})
 
-	// Wait for completion
-	p.wg.Wait()
+	go func() {
+		defer close(agentDone)
+		p.readFromAgent()
+	}()
+	go func() {
+		defer close(upstreamDone)
+		p.readFromUpstream()
+	}()
+
+	// Wait for EITHER to complete - not both
+	// If upstream dies, we exit even if agent stdin is still open
+	// If agent closes stdin, upstream will see EOF and exit
+	select {
+	case <-agentDone:
+	case <-upstreamDone:
+	}
 
 	// Emit run_end
 	p.emitRunEnd()
@@ -117,7 +129,6 @@ func (p *Proxy) Stop() {
 
 // readFromAgent reads requests from agent stdin and forwards to upstream.
 func (p *Proxy) readFromAgent() {
-	defer p.wg.Done()
 	defer p.upstream.CloseStdin() // Signal EOF to upstream when agent is done
 
 	scanner := bufio.NewScanner(p.agentIn)
@@ -196,8 +207,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) {
 
 // readFromUpstream reads responses from upstream and forwards to agent.
 func (p *Proxy) readFromUpstream() {
-	defer p.wg.Done()
-	defer p.Stop() // Signal shutdown when upstream exits (fixes hang on upstream crash)
+	defer p.Stop() // Signal shutdown when upstream exits
 
 	scanner := bufio.NewScanner(p.upstream.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)

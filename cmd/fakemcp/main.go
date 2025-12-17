@@ -8,6 +8,7 @@
 //	./fakemcp                        # Server with default "test_tool"
 //	./fakemcp --tools=git_push,list  # Server with specific tools
 //	./fakemcp --echo                 # Echo mode: return args as result
+//	./fakemcp --crash-on=toolname    # Exit(1) when toolname is called (simulate crash)
 //
 // The server reads JSON-RPC from stdin and writes responses to stdout.
 // It responds to: initialize, tools/list, tools/call
@@ -25,6 +26,7 @@ func main() {
 	// Parse flags
 	toolsFlag := flag.String("tools", "test_tool", "Comma-separated list of tool names to expose")
 	echoMode := flag.Bool("echo", false, "Echo mode: return args JSON as result")
+	crashOn := flag.String("crash-on", "", "Exit immediately when this tool is called (simulate crash)")
 	flag.Parse()
 
 	// Create server
@@ -38,7 +40,13 @@ func main() {
 			continue
 		}
 
-		if *echoMode {
+		if name == *crashOn {
+			// Crash mode: exit immediately when this tool is called
+			server.AddTool(name, "Test tool (crashes)", func(args map[string]any) (string, error) {
+				os.Exit(1) // Simulate crash - no response sent
+				return "", nil
+			})
+		} else if *echoMode {
 			// Echo mode: return the arguments as the result
 			server.AddTool(name, "Test tool (echo mode)", echoHandler)
 		} else {
