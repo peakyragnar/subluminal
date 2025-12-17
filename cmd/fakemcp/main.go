@@ -9,12 +9,14 @@
 //	./fakemcp --tools=git_push,list  # Server with specific tools
 //	./fakemcp --echo                 # Echo mode: return args as result
 //	./fakemcp --crash-on=toolname    # Exit(1) when toolname is called (simulate crash)
+//	./fakemcp --error-on=toolname    # Return JSON-RPC error when toolname is called
 //
 // The server reads JSON-RPC from stdin and writes responses to stdout.
 // It responds to: initialize, tools/list, tools/call
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"strconv"
@@ -28,7 +30,16 @@ func main() {
 	toolsFlag := flag.String("tools", "test_tool", "Comma-separated list of tool names to expose")
 	echoMode := flag.Bool("echo", false, "Echo mode: return args JSON as result")
 	crashOn := flag.String("crash-on", "", "Exit immediately when this tool is called (simulate crash)")
+	errorOn := flag.String("error-on", "", "Return error when this tool is called (comma-separated)")
 	flag.Parse()
+
+	// Parse error-on tools into a set
+	errorTools := make(map[string]bool)
+	if *errorOn != "" {
+		for _, name := range strings.Split(*errorOn, ",") {
+			errorTools[strings.TrimSpace(name)] = true
+		}
+	}
 
 	// Create server
 	server := testharness.NewFakeMCPServer()
@@ -46,6 +57,11 @@ func main() {
 			server.AddTool(name, "Test tool (crashes)", func(args map[string]any) (string, error) {
 				os.Exit(1) // Simulate crash - no response sent
 				return "", nil
+			})
+		} else if errorTools[name] {
+			// Error mode: return an error for this tool
+			server.AddTool(name, "Test tool (errors)", func(args map[string]any) (string, error) {
+				return "", errors.New("simulated tool error")
 			})
 		} else if *echoMode {
 			// Echo mode: return the arguments as the result

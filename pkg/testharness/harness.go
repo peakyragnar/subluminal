@@ -72,6 +72,9 @@ type HarnessConfig struct {
 
 	// CrashOn makes fakemcp exit(1) when this tool is called (simulates crash).
 	CrashOn string
+
+	// ErrorOn makes fakemcp return an error when these tools are called (comma-separated).
+	ErrorOn string
 }
 
 // directPipes connects driver directly to fake server (no shim).
@@ -167,6 +170,9 @@ func (h *TestHarness) startWithShim() error {
 	}
 	if h.config.CrashOn != "" {
 		args = append(args, "--crash-on="+h.config.CrashOn)
+	}
+	if h.config.ErrorOn != "" {
+		args = append(args, "--error-on="+h.config.ErrorOn)
 	}
 
 	// Start shim process

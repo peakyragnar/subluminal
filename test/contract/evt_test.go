@@ -11,7 +11,6 @@
 package contract
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
@@ -398,12 +397,14 @@ func TestEVT007_LatencyMSPresentAndSane(t *testing.T) {
 func TestEVT008_StatusErrorClassTaxonomy(t *testing.T) {
 	skipIfNoShim(t)
 
-	h := newShimHarness()
-
-	// Add tool that returns an error
-	h.AddTool("error_tool", "A tool that errors", func(args map[string]any) (string, error) {
-		return "", fmt.Errorf("something went wrong")
+	// Use ErrorOn config so fakemcp subprocess returns an error
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ErrorOn:  "error_tool",
 	})
+
+	// Register tool so fakemcp knows about it
+	h.AddTool("error_tool", "A tool that errors", nil)
 
 	if err := h.Start(); err != nil {
 		t.Fatalf("Failed to start harness: %v", err)
