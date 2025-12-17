@@ -75,6 +75,10 @@ type HarnessConfig struct {
 
 	// ErrorOn makes fakemcp return an error when these tools are called (comma-separated).
 	ErrorOn string
+
+	// MeasureSize makes fakemcp return {"bytes_received": N} for each tool call,
+	// where N is the JSON byte size of the args. Used by BUF-003 test.
+	MeasureSize bool
 }
 
 // directPipes connects driver directly to fake server (no shim).
@@ -173,6 +177,9 @@ func (h *TestHarness) startWithShim() error {
 	}
 	if h.config.ErrorOn != "" {
 		args = append(args, "--error-on="+h.config.ErrorOn)
+	}
+	if h.config.MeasureSize {
+		args = append(args, "--measure-size")
 	}
 
 	// Start shim process

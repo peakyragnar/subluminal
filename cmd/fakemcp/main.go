@@ -16,8 +16,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +31,7 @@ func main() {
 	// Parse flags
 	toolsFlag := flag.String("tools", "test_tool", "Comma-separated list of tool names to expose")
 	echoMode := flag.Bool("echo", false, "Echo mode: return args JSON as result")
+	measureSize := flag.Bool("measure-size", false, "Measure-size mode: return {\"bytes_received\": N} where N is the JSON size of args")
 	crashOn := flag.String("crash-on", "", "Exit immediately when this tool is called (simulate crash)")
 	errorOn := flag.String("error-on", "", "Return error when this tool is called (comma-separated)")
 	flag.Parse()
@@ -63,6 +66,9 @@ func main() {
 			server.AddTool(name, "Test tool (errors)", func(args map[string]any) (string, error) {
 				return "", errors.New("simulated tool error")
 			})
+		} else if *measureSize {
+			// Measure-size mode: return the byte size of the args JSON
+			server.AddTool(name, "Test tool (measure-size mode)", measureSizeHandler)
 		} else if *echoMode {
 			// Echo mode: return the arguments as the result
 			server.AddTool(name, "Test tool (echo mode)", echoHandler)
@@ -93,6 +99,19 @@ func echoHandler(args map[string]any) (string, error) {
 	}
 	result += "}"
 	return result, nil
+}
+
+// measureSizeHandler returns the byte size of the args JSON.
+// This is useful for BUF-003 test to verify large payloads are forwarded correctly.
+func measureSizeHandler(args map[string]any) (string, error) {
+	// Marshal args to JSON to get the exact byte size
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal args: %w", err)
+	}
+
+	// Return the byte count
+	return fmt.Sprintf(`{"bytes_received": %d}`, len(argsJSON)), nil
 }
 
 func formatValue(v any) string {

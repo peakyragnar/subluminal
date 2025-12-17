@@ -5,6 +5,7 @@
 package contract
 
 import (
+	"encoding/json"
 	"runtime"
 	"strings"
 	"sync"
@@ -146,27 +147,12 @@ func TestBUF002_NoOOMOnLargePayload(t *testing.T) {
 func TestBUF003_ForwardingCorrectnessUnderTruncation(t *testing.T) {
 	skipIfNoShim(t)
 
-	// NOTE: This test is currently skipped because the test design doesn't work
-	// with the shim subprocess architecture. The custom handler is set on the
-	// harness's FakeServer, but in shim mode, a separate fakemcp process is
-	// spawned which doesn't have access to the handler.
-	//
-	// To properly test this, we'd need either:
-	// 1. A way to pass custom handlers to fakemcp (e.g., via a handler file)
-	// 2. Have fakemcp echo received payload sizes in its response
-	// 3. Add a --measure-size flag to fakemcp
-	//
-	// For now, BUF-001 and BUF-002 provide coverage that large payloads work.
-	t.Skip("BUF-003: Test design incompatible with shim subprocess architecture - needs redesign")
-
-	h := newShimHarness()
-
-	var receivedSize int
-	h.AddTool("measure", "Measure payload size", func(args map[string]any) (string, error) {
-		data, _ := args["data"].(string)
-		receivedSize = len(data)
-		return "ok", nil
+	// Use measure-size mode: fakemcp returns {"bytes_received": N} for each call
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath:    shimPath,
+		MeasureSize: true,
 	})
+	h.AddTool("measure", "Measure payload size", nil)
 
 	if err := h.Start(); err != nil {
 		t.Fatalf("Failed to start harness: %v", err)
@@ -175,17 +161,44 @@ func TestBUF003_ForwardingCorrectnessUnderTruncation(t *testing.T) {
 
 	h.Initialize()
 
-	// Execute: Send large payload
-	expectedSize := 1024 * 1024 * 2 // 2 MiB
-	largeData := strings.Repeat("z", expectedSize)
-	h.CallTool("measure", map[string]any{"data": largeData})
+	// Execute: Send large payload (2 MiB)
+	expectedDataSize := 1024 * 1024 * 2
+	largeData := strings.Repeat("z", expectedDataSize)
+	resp, err := h.CallTool("measure", map[string]any{"data": largeData})
+	if err != nil {
+		t.Fatalf("Failed to call tool: %v", err)
+	}
 
-	// Assert: Upstream received full payload
-	if receivedSize != expectedSize {
+	// Parse response to get bytes_received
+	wrapped := testharness.WrapResponse(resp)
+	if !wrapped.IsSuccess() {
+		t.Fatalf("Tool call failed: %s", wrapped.ErrorMessage())
+	}
+
+	// Extract the text result (which is JSON: {"bytes_received": N})
+	resultText := wrapped.ResultText()
+	if resultText == "" {
+		t.Fatal("BUF-003 FAILED: No result text returned from measure-size mode")
+	}
+
+	// Parse the JSON to get bytes_received
+	var resultData map[string]any
+	if err := json.Unmarshal([]byte(resultText), &resultData); err != nil {
+		t.Fatalf("BUF-003 FAILED: Could not parse result JSON: %v\nResult text: %s", err, resultText)
+	}
+
+	bytesReceived, ok := resultData["bytes_received"].(float64)
+	if !ok {
+		t.Fatalf("BUF-003 FAILED: bytes_received not found or not a number in result: %v", resultData)
+	}
+
+	// The bytes_received should be at least the size of the data
+	// (it will be slightly larger due to JSON structure: {"data":"..."})
+	if int(bytesReceived) < expectedDataSize {
 		t.Errorf("BUF-003 FAILED: Upstream received truncated payload\n"+
 			"  Per Interface-Pack §1.10, shim MUST forward full traffic even if truncating for inspection\n"+
-			"  Expected size: %d bytes\n"+
-			"  Received size: %d bytes", expectedSize, receivedSize)
+			"  Expected at least: %d bytes (data size)\n"+
+			"  Received: %d bytes", expectedDataSize, int(bytesReceived))
 	}
 }
 
