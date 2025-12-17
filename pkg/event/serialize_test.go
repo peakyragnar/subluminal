@@ -610,3 +610,241 @@ func TestEVT004_RunIDConsistent(t *testing.T) {
 			"  Got:      %s", sharedRunID, runID1)
 	}
 }
+
+// =============================================================================
+// EVT-005: call_id Uniqueness and seq Ordering
+// Contract: call_id MUST be unique within a run and SHOULD be globally unique.
+//           seq MUST be monotonically increasing within a run (starts at 1).
+// Reference: Interface-Pack.md §0.3, §1.5, Contract-Test-Checklist.md EVT-005
+// =============================================================================
+
+func TestEVT005_SeqStartsAtOne(t *testing.T) {
+	// The first call in a run MUST have seq=1 (not 0)
+	// Per Interface-Pack §1.5: "seq (integer) — monotonically increasing call index within run (starts at 1)"
+	evt := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:       "0.1.0",
+			Type:    event.EventTypeToolCallStart,
+			TS:      "2025-01-15T12:00:00.000Z",
+			RunID:   "run_evt005_seq_start",
+			AgentID: "agent_evt005",
+			Client:  event.ClientClaude,
+			Env:     event.EnvDev,
+			Source: event.Source{
+				HostID: "host_evt005",
+				ProcID: "proc_evt005",
+				ShimID: "shim_evt005",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_first",
+			ServerName: "server",
+			ToolName:   "tool",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash1",
+			BytesIn:    100,
+			Seq:        1, // First call starts at 1
+		},
+	}
+
+	output, err := event.SerializeEvent(evt)
+	if err != nil {
+		t.Fatalf("SerializeEvent returned error: %v", err)
+	}
+
+	// Parse the JSON output
+	jsonPart := bytes.TrimSuffix(output, []byte("\n"))
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+		t.Fatalf("Failed to parse output as JSON: %v", err)
+	}
+
+	// Extract call.seq
+	call, ok := parsed["call"].(map[string]any)
+	if !ok {
+		t.Fatalf("EVT-005 FAILED: 'call' is not an object or missing")
+	}
+
+	seq, ok := call["seq"].(float64) // JSON numbers are float64
+	if !ok {
+		t.Fatalf("EVT-005 FAILED: call.seq is not a number")
+	}
+
+	// Verify seq starts at 1
+	if seq != 1 {
+		t.Errorf("EVT-005 FAILED: First call in run has seq=%v, expected 1\n"+
+			"  Per Interface-Pack §1.5, seq starts at 1 (not 0)", seq)
+	}
+}
+
+func TestEVT005_SeqMonotonic(t *testing.T) {
+	// seq values MUST increment monotonically (1, 2, 3...) with no gaps or repeats
+	// Per Interface-Pack §1.5: "monotonically increasing call index within run"
+	sharedRunID := "run_evt005_monotonic"
+
+	// Create three events with seq 1, 2, 3
+	events := []struct {
+		callID string
+		seq    int
+	}{
+		{"call_seq_1", 1},
+		{"call_seq_2", 2},
+		{"call_seq_3", 3},
+	}
+
+	var seqValues []float64
+
+	for _, tc := range events {
+		evt := event.ToolCallStartEvent{
+			Envelope: event.Envelope{
+				V:       "0.1.0",
+				Type:    event.EventTypeToolCallStart,
+				TS:      "2025-01-15T12:00:00.000Z",
+				RunID:   sharedRunID,
+				AgentID: "agent_monotonic",
+				Client:  event.ClientClaude,
+				Env:     event.EnvDev,
+				Source: event.Source{
+					HostID: "host_mono",
+					ProcID: "proc_mono",
+					ShimID: "shim_mono",
+				},
+			},
+			Call: event.CallInfo{
+				CallID:     tc.callID,
+				ServerName: "server",
+				ToolName:   "tool",
+				Transport:  "mcp_stdio",
+				ArgsHash:   "hash_" + tc.callID,
+				BytesIn:    100,
+				Seq:        tc.seq,
+			},
+		}
+
+		output, err := event.SerializeEvent(evt)
+		if err != nil {
+			t.Fatalf("SerializeEvent returned error for %s: %v", tc.callID, err)
+		}
+
+		// Parse and extract seq
+		jsonPart := bytes.TrimSuffix(output, []byte("\n"))
+		var parsed map[string]any
+		if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+			t.Fatalf("Failed to parse output for %s: %v", tc.callID, err)
+		}
+
+		call, ok := parsed["call"].(map[string]any)
+		if !ok {
+			t.Fatalf("EVT-005 FAILED: 'call' is not an object for %s", tc.callID)
+		}
+
+		seq, ok := call["seq"].(float64)
+		if !ok {
+			t.Fatalf("EVT-005 FAILED: call.seq is not a number for %s", tc.callID)
+		}
+
+		seqValues = append(seqValues, seq)
+	}
+
+	// Verify seq values are monotonically increasing: 1, 2, 3
+	expectedSeq := []float64{1, 2, 3}
+	for i, expected := range expectedSeq {
+		if seqValues[i] != expected {
+			t.Errorf("EVT-005 FAILED: seq values are not monotonically increasing\n"+
+				"  Per Interface-Pack §1.5, seq must increment without gaps\n"+
+				"  Expected sequence: %v\n"+
+				"  Got sequence:      %v", expectedSeq, seqValues)
+			break
+		}
+	}
+
+	// Verify no duplicates
+	seenSeq := make(map[float64]bool)
+	for _, seq := range seqValues {
+		if seenSeq[seq] {
+			t.Errorf("EVT-005 FAILED: Duplicate seq value %v detected\n"+
+				"  Per Interface-Pack §1.5, seq must be monotonically increasing (no repeats)", seq)
+		}
+		seenSeq[seq] = true
+	}
+}
+
+func TestEVT005_CallIDUnique(t *testing.T) {
+	// call_id MUST be unique within a run
+	// Per Interface-Pack §0.3: "call_id MUST be unique within a run and SHOULD be globally unique"
+	sharedRunID := "run_evt005_callid_unique"
+
+	// Create three events with different call_ids
+	callIDs := []string{"call_unique_1", "call_unique_2", "call_unique_3"}
+	seenCallIDs := make(map[string]bool)
+
+	for i, callID := range callIDs {
+		evt := event.ToolCallStartEvent{
+			Envelope: event.Envelope{
+				V:       "0.1.0",
+				Type:    event.EventTypeToolCallStart,
+				TS:      "2025-01-15T12:00:00.000Z",
+				RunID:   sharedRunID,
+				AgentID: "agent_callid_unique",
+				Client:  event.ClientClaude,
+				Env:     event.EnvDev,
+				Source: event.Source{
+					HostID: "host_unique",
+					ProcID: "proc_unique",
+					ShimID: "shim_unique",
+				},
+			},
+			Call: event.CallInfo{
+				CallID:     callID,
+				ServerName: "server",
+				ToolName:   "tool",
+				Transport:  "mcp_stdio",
+				ArgsHash:   "hash_" + callID,
+				BytesIn:    100,
+				Seq:        i + 1,
+			},
+		}
+
+		output, err := event.SerializeEvent(evt)
+		if err != nil {
+			t.Fatalf("SerializeEvent returned error for %s: %v", callID, err)
+		}
+
+		// Parse and extract call_id
+		jsonPart := bytes.TrimSuffix(output, []byte("\n"))
+		var parsed map[string]any
+		if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+			t.Fatalf("Failed to parse output for %s: %v", callID, err)
+		}
+
+		call, ok := parsed["call"].(map[string]any)
+		if !ok {
+			t.Fatalf("EVT-005 FAILED: 'call' is not an object for %s", callID)
+		}
+
+		parsedCallID, ok := call["call_id"].(string)
+		if !ok {
+			t.Fatalf("EVT-005 FAILED: call.call_id is not a string for %s", callID)
+		}
+
+		// Check for duplicates
+		if seenCallIDs[parsedCallID] {
+			t.Errorf("EVT-005 FAILED: Duplicate call_id %q detected within run\n"+
+				"  Per Interface-Pack §0.3, call_id MUST be unique within a run", parsedCallID)
+		}
+		seenCallIDs[parsedCallID] = true
+
+		// Verify call_id matches expected value
+		if parsedCallID != callID {
+			t.Errorf("EVT-005 FAILED: call_id mismatch\n"+
+				"  Expected: %s\n"+
+				"  Got:      %s", callID, parsedCallID)
+		}
+	}
+
+	// Verify we collected all unique call_ids
+	if len(seenCallIDs) != len(callIDs) {
+		t.Errorf("EVT-005 FAILED: Expected %d unique call_ids, got %d",
+			len(callIDs), len(seenCallIDs))
+	}
+}
