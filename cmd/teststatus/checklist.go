@@ -15,7 +15,7 @@ type TestSpec struct {
 	Category    string // Derived from ID prefix: EVT, HASH, POL, etc.
 }
 
-// parseChecklist reads Contract-Test-Checklist.md and extracts test specs
+// parseChecklist reads docs/Contract-Test-Checklist.md and extracts test specs
 func parseChecklist(path string) ([]TestSpec, error) {
 	file, err := os.Open(path)
 	if err != nil {
