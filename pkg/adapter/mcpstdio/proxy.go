@@ -51,8 +51,9 @@ type Proxy struct {
 	pendingMu    sync.RWMutex
 
 	// Shutdown coordination
-	done chan struct{}
-	wg   sync.WaitGroup
+	done      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // pendingCall tracks a tool call waiting for response.
@@ -109,7 +110,9 @@ func (p *Proxy) Run() error {
 
 // Stop signals the proxy to shut down.
 func (p *Proxy) Stop() {
-	close(p.done)
+	p.closeOnce.Do(func() {
+		close(p.done)
+	})
 }
 
 // readFromAgent reads requests from agent stdin and forwards to upstream.
@@ -194,6 +197,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) {
 // readFromUpstream reads responses from upstream and forwards to agent.
 func (p *Proxy) readFromUpstream() {
 	defer p.wg.Done()
+	defer p.Stop() // Signal shutdown when upstream exits (fixes hang on upstream crash)
 
 	scanner := bufio.NewScanner(p.upstream.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
