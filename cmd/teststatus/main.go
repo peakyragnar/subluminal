@@ -1,6 +1,6 @@
 // Command teststatus shows the status of all tests (unit + contract).
 //
-// It cross-references the Contract-Test-Checklist.md against actual test
+// It cross-references docs/Contract-Test-Checklist.md against actual test
 // implementations and test results to give you instant visibility into
 // what exists, what's passing, and what's missing.
 //
@@ -27,7 +27,7 @@ func main() {
 	)
 	flag.Parse()
 
-	// Find project root (where Contract-Test-Checklist.md lives)
+	// Find project root (where go.mod lives)
 	root, err := findProjectRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -35,7 +35,7 @@ func main() {
 	}
 
 	// Parse the checklist to get expected contract tests
-	checklistPath := filepath.Join(root, "Contract-Test-Checklist.md")
+	checklistPath := filepath.Join(root, "docs", "Contract-Test-Checklist.md")
 	specs, err := parseChecklist(checklistPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing checklist: %v\n", err)
@@ -106,21 +106,21 @@ func main() {
 }
 
 func findProjectRoot() (string, error) {
-	// Start from current directory and walk up looking for Contract-Test-Checklist.md
+	// Start from current directory and walk up looking for go.mod
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 
 	for {
-		checklistPath := filepath.Join(dir, "Contract-Test-Checklist.md")
-		if _, err := os.Stat(checklistPath); err == nil {
+		goModPath := filepath.Join(dir, "go.mod")
+		if _, err := os.Stat(goModPath); err == nil {
 			return dir, nil
 		}
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("could not find Contract-Test-Checklist.md in any parent directory")
+			return "", fmt.Errorf("could not find go.mod in any parent directory")
 		}
 		dir = parent
 	}
