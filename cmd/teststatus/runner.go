@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -76,8 +78,15 @@ type UnitTestResult struct {
 
 // runContractTests executes contract tests and returns results keyed by test ID
 func runContractTests(projectRoot string) (map[string]TestResult, error) {
-	cmd := exec.Command("go", "test", "-json", "-count=1", "./test/contract/...")
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-timeout=60s", "./test/contract/...")
 	cmd.Dir = projectRoot
+
+	// Set environment variables for shim and fakemcp paths
+	// Contract tests need these to find the binaries
+	cmd.Env = append(os.Environ(),
+		"SUBLUMINAL_SHIM_PATH="+filepath.Join(projectRoot, "bin", "shim"),
+		"SUBLUMINAL_FAKEMCP_PATH="+filepath.Join(projectRoot, "bin", "fakemcp"),
+	)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

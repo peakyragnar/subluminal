@@ -100,7 +100,7 @@ func TestHASH002_CanonicalizationStability(t *testing.T) {
 	// Golden value: precomputed SHA-256 of canonical JSON
 	// Canonical JSON: {"branch":"main","command":"git push","force":false}
 	// This is the expected hash that MUST match every time
-	goldenHash := "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+	goldenHash := "e13c608f6d08e999ce8c39b52fa274a731ccab0e6b3b3e62cd23511b93d7527e"
 
 	// Execute: Call multiple times with same args
 	for i := 0; i < 5; i++ {

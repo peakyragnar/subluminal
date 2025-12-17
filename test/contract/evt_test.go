@@ -11,7 +11,6 @@
 package contract
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
@@ -356,6 +355,9 @@ func TestEVT007_LatencyMSPresentAndSane(t *testing.T) {
 	h.Initialize()
 	h.CallTool("slow_tool", nil)
 
+	// Stop the harness to ensure all events are captured
+	h.Stop()
+
 	// Assert: tool_call_end has latency_ms >= 200 (or reasonable)
 	toolCallEnds := h.EventSink.ByType("tool_call_end")
 	if len(toolCallEnds) == 0 {
@@ -395,12 +397,14 @@ func TestEVT007_LatencyMSPresentAndSane(t *testing.T) {
 func TestEVT008_StatusErrorClassTaxonomy(t *testing.T) {
 	skipIfNoShim(t)
 
-	h := newShimHarness()
-
-	// Add tool that returns an error
-	h.AddTool("error_tool", "A tool that errors", func(args map[string]any) (string, error) {
-		return "", fmt.Errorf("something went wrong")
+	// Use ErrorOn config so fakemcp subprocess returns an error
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ErrorOn:  "error_tool",
 	})
+
+	// Register tool so fakemcp knows about it
+	h.AddTool("error_tool", "A tool that errors", nil)
 
 	if err := h.Start(); err != nil {
 		t.Fatalf("Failed to start harness: %v", err)
@@ -410,6 +414,9 @@ func TestEVT008_StatusErrorClassTaxonomy(t *testing.T) {
 	// Execute: Call the error tool
 	h.Initialize()
 	h.CallTool("error_tool", nil)
+
+	// Stop the harness to ensure all events are captured
+	h.Stop()
 
 	// Assert: tool_call_end has status=ERROR with proper error.class
 	toolCallEnds := h.EventSink.ByType("tool_call_end")
@@ -495,6 +502,9 @@ func TestEVT009_RunEndSummaryCountsCorrect(t *testing.T) {
 		h.CallTool("allowed_tool", nil)
 	}
 
+	// Stop the harness to trigger run_end event
+	h.Stop()
+
 	// Get run_end event
 	runEnds := h.EventSink.ByType("run_end")
 	if len(runEnds) == 0 {
@@ -530,5 +540,66 @@ func TestEVT009_RunEndSummaryCountsCorrect(t *testing.T) {
 		t.Errorf("EVT-009 FAILED: calls_allowed(%d) + calls_blocked(%d) != calls_total(%d)\n"+
 			"  Per Interface-Pack §1.8, counts must be consistent",
 			callsAllowed, callsBlocked, callsTotal)
+	}
+}
+
+// =============================================================================
+// EVT-010: run_end Is Always Last Event
+// Contract: run_end must be emitted AFTER all tool_call_end events, even when
+//           agent closes stdin while upstream responses are still in flight.
+// Reference: Interface-Pack.md §1.2, Contract-Test-Checklist.md EVT-003
+// Regression test for: run_end emitted before upstream responses drained
+// =============================================================================
+
+func TestEVT010_RunEndIsAlwaysLastEvent(t *testing.T) {
+	skipIfNoShim(t)
+
+	h := newShimHarness()
+	// Use echo mode so we get predictable responses
+	h.AddTool("test_tool", "A test tool", nil)
+
+	if err := h.Start(); err != nil {
+		t.Fatalf("Failed to start harness: %v", err)
+	}
+	defer h.Stop()
+
+	// Execute: Send multiple tool calls
+	h.Initialize()
+	for i := 0; i < 5; i++ {
+		h.CallTool("test_tool", map[string]any{"i": i})
+	}
+
+	// Stop harness - this closes stdin and waits for shutdown
+	h.Stop()
+
+	// Assert: run_end is the very last event
+	events := h.Events()
+	if len(events) == 0 {
+		t.Fatal("EVT-010 FAILED: No events captured")
+	}
+
+	lastEvent := events[len(events)-1]
+	if lastEvent.Type != "run_end" {
+		t.Errorf("EVT-010 FAILED: Last event is %q, expected run_end\n"+
+			"  Per Interface-Pack §1.2, run_end must be the final event\n"+
+			"  This can happen if run_end is emitted before responses are drained",
+			lastEvent.Type)
+	}
+
+	// Assert: All tool_call_end events come before run_end
+	runEndIdx := -1
+	for i, evt := range events {
+		if evt.Type == "run_end" {
+			runEndIdx = i
+			break
+		}
+	}
+
+	for i, evt := range events {
+		if evt.Type == "tool_call_end" && i > runEndIdx && runEndIdx >= 0 {
+			t.Errorf("EVT-010 FAILED: tool_call_end at index %d comes after run_end at index %d\n"+
+				"  Per Interface-Pack §1.2, all tool events must complete before run_end",
+				i, runEndIdx)
+		}
 	}
 }

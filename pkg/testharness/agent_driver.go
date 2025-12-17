@@ -87,6 +87,14 @@ func (d *AgentDriver) readResponses() {
 			d.respMu.Unlock()
 		}
 	}
+
+	// EOF reached (upstream closed) - unblock any pending waiters
+	d.respMu.Lock()
+	for id, ch := range d.responses {
+		close(ch) // Unblock waiter with nil response
+		delete(d.responses, id)
+	}
+	d.respMu.Unlock()
 }
 
 // =============================================================================
@@ -243,8 +251,11 @@ func (d *AgentDriver) sendRequest(method string, params any) (*JSONRPCResponse, 
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	// Wait for response
-	resp := <-respCh
+	// Wait for response (channel closed with nil means upstream died)
+	resp, ok := <-respCh
+	if !ok || resp == nil {
+		return nil, fmt.Errorf("connection closed before response received")
+	}
 	return resp, nil
 }
 
