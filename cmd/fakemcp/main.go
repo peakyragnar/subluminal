@@ -17,6 +17,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/subluminal/subluminal/pkg/testharness"
@@ -84,9 +85,9 @@ func formatValue(v any) string {
 		return "\"" + val + "\""
 	case float64:
 		if val == float64(int64(val)) {
-			return strings.TrimSuffix(strings.TrimSuffix(string(rune(int(val)+'0')), ".0"), ".0")
+			return strconv.FormatInt(int64(val), 10)
 		}
-		return "number"
+		return strconv.FormatFloat(val, 'g', -1, 64)
 	case bool:
 		if val {
 			return "true"
