@@ -24,6 +24,7 @@ import (
 	"github.com/subluminal/subluminal/pkg/canonical"
 	"github.com/subluminal/subluminal/pkg/core"
 	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/subluminal/subluminal/pkg/policy"
 )
 
 // Proxy handles bidirectional JSON-RPC proxying with event emission.
@@ -41,6 +42,7 @@ type Proxy struct {
 	identity   core.Identity
 	source     core.Source
 	serverName string
+	policy     policy.Bundle
 
 	// I/O
 	agentIn  io.Reader
@@ -73,6 +75,7 @@ func NewProxy(
 	agentIn io.Reader,
 	agentOut io.Writer,
 ) *Proxy {
+	policyBundle := policy.LoadFromEnv()
 	return &Proxy{
 		upstream:     upstream,
 		emitter:      emitter,
@@ -80,6 +83,7 @@ func NewProxy(
 		identity:     identity,
 		source:       source,
 		serverName:   serverName,
+		policy:       policyBundle,
 		agentIn:      agentIn,
 		agentOut:     agentOut,
 		pendingCalls: make(map[any]*pendingCall),
@@ -161,7 +165,9 @@ func (p *Proxy) readFromAgent() {
 
 		// Intercept tools/call
 		if IsToolsCall(&req) {
-			p.interceptToolCall(&req, line)
+			if !p.interceptToolCall(&req, line) {
+				continue
+			}
 		}
 
 		// Forward to upstream
@@ -170,12 +176,12 @@ func (p *Proxy) readFromAgent() {
 }
 
 // interceptToolCall processes a tools/call request and emits events.
-func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) {
+func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Parse params
 	toolName, args, err := ParseToolsCallParams(req.Params)
 	if err != nil {
 		// Can't parse - still forward, just don't emit events
-		return
+		return true
 	}
 
 	// Compute args_hash
@@ -187,8 +193,25 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) {
 	// Start tracking
 	callState := p.state.StartCall(callID)
 
+	policyDecision := p.policy.Decide(p.serverName, toolName)
+	decision := event.Decision{
+		Action:   policyDecision.Action,
+		RuleID:   policyDecision.RuleID,
+		Severity: policyDecision.Severity,
+		Explain: event.DecisionExplain{
+			Summary:    policyDecision.Summary,
+			ReasonCode: policyDecision.ReasonCode,
+		},
+		Policy: p.policy.Info,
+	}
+	if p.policy.Mode == event.RunModeObserve {
+		decision.Action = event.DecisionAllow
+	}
+
+	blocked := p.policy.Mode != event.RunModeObserve && decision.Action == event.DecisionBlock
+
 	// Track pending call for response matching
-	if id, ok := GetRequestID(req); ok {
+	if id, ok := GetRequestID(req); ok && !blocked {
 		p.pendingMu.Lock()
 		p.pendingCalls[normalizeID(id)] = &pendingCall{
 			callID:   callID,
@@ -202,11 +225,32 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) {
 	// Emit tool_call_start
 	p.emitToolCallStart(callID, toolName, argsHash, len(rawLine), args, callState.Seq)
 
-	// Emit tool_call_decision (v0.1: always ALLOW)
-	p.emitToolCallDecision(callID, toolName, argsHash)
+	// Emit tool_call_decision
+	p.emitToolCallDecision(callID, toolName, argsHash, decision)
+
+	if blocked {
+		p.state.IncrementBlocked()
+		latencyMS := p.state.EndCall(callID)
+		errDetail := &event.ErrorDetail{
+			Class:   "policy_block",
+			Message: decision.Explain.Summary,
+			Code:    ErrCodePolicyBlocked,
+		}
+		p.emitToolCallEnd(callID, toolName, argsHash, event.CallStatusError, latencyMS, 0, errDetail)
+
+		if id, ok := GetRequestID(req); ok {
+			errData := p.policyErrorData(callID, toolName, argsHash, decision)
+			resp := NewErrorResponse(id, ErrCodePolicyBlocked, decision.Explain.Summary, errData)
+			if payload, err := json.Marshal(resp); err == nil {
+				p.forwardToAgent(payload)
+			}
+		}
+		return false
+	}
 
 	// Increment allowed counter
 	p.state.IncrementAllowed()
+	return true
 }
 
 // readFromUpstream reads responses from upstream and forwards to agent.
@@ -304,12 +348,8 @@ func (p *Proxy) emitRunStart() {
 		Envelope: p.makeEnvelope(event.EventTypeRunStart),
 		Run: event.RunInfo{
 			StartedAt: p.state.StartTime().UTC().Format(time.RFC3339Nano),
-			Mode:      event.RunModeObserve, // v0.1: observe only
-			Policy: event.PolicyInfo{
-				PolicyID:      "default",
-				PolicyVersion: "0.1.0",
-				PolicyHash:    "none",
-			},
+			Mode:      p.policy.Mode,
+			Policy:    p.policy.Info,
 		},
 	}
 	p.emitter.Emit(evt)
@@ -365,7 +405,29 @@ func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int
 	p.emitter.Emit(evt)
 }
 
-func (p *Proxy) emitToolCallDecision(callID, toolName, argsHash string) {
+func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision event.Decision) map[string]any {
+	return map[string]any{
+		"subluminal": map[string]any{
+			"v":          core.InterfaceVersion,
+			"action":     decision.Action,
+			"rule_id":    decision.RuleID,
+			"reason_code": decision.Explain.ReasonCode,
+			"summary":    decision.Explain.Summary,
+			"run_id":     p.identity.RunID,
+			"call_id":    callID,
+			"server_name": p.serverName,
+			"tool_name":   toolName,
+			"args_hash":   argsHash,
+			"policy": map[string]any{
+				"policy_id":      decision.Policy.PolicyID,
+				"policy_version": decision.Policy.PolicyVersion,
+				"policy_hash":    decision.Policy.PolicyHash,
+			},
+		},
+	}
+}
+
+func (p *Proxy) emitToolCallDecision(callID, toolName, argsHash string, decision event.Decision) {
 	evt := event.ToolCallDecisionEvent{
 		Envelope: p.makeEnvelope(event.EventTypeToolCallDecision),
 		Call: event.CallRef{
@@ -374,20 +436,7 @@ func (p *Proxy) emitToolCallDecision(callID, toolName, argsHash string) {
 			ToolName:   toolName,
 			ArgsHash:   argsHash,
 		},
-		Decision: event.Decision{
-			Action:   event.DecisionAllow,
-			RuleID:   nil, // No rule triggered
-			Severity: event.SeverityInfo,
-			Explain: event.DecisionExplain{
-				Summary:    "Allowed by default policy",
-				ReasonCode: "DEFAULT_ALLOW",
-			},
-			Policy: event.PolicyInfo{
-				PolicyID:      "default",
-				PolicyVersion: "0.1.0",
-				PolicyHash:    "none",
-			},
-		},
+		Decision: decision,
 	}
 	p.emitter.Emit(evt)
 }
