@@ -21,9 +21,24 @@ import (
 func TestERR001_BlockUsesCorrectErrorCode(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: This test requires a policy with a deny rule
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-err-001",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-blocked-tool",
+				"kind": "deny",
+				"match": {"tool_name": {"glob": ["blocked_tool"]}},
+				"effect": {"action": "BLOCK", "reason_code": "TEST_BLOCK", "message": "Blocked for ERR-001 test"}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("blocked_tool", "A tool blocked by policy", nil)
 
 	if err := h.Start(); err != nil {
@@ -33,7 +48,6 @@ func TestERR001_BlockUsesCorrectErrorCode(t *testing.T) {
 
 	h.Initialize()
 
-	// Execute: Call blocked tool
 	resp, err := h.CallTool("blocked_tool", nil)
 	if err != nil {
 		t.Fatalf("Failed to call tool: %v", err)
@@ -41,9 +55,8 @@ func TestERR001_BlockUsesCorrectErrorCode(t *testing.T) {
 
 	wrapped := testharness.WrapResponse(resp)
 
-	// Assert: Response is an error
 	if wrapped.IsSuccess() {
-		t.Skip("ERR-001: Tool was not blocked - needs policy configuration")
+		t.Fatal("ERR-001 FAILED: Tool should have been blocked by policy")
 	}
 
 	// Assert: Error code is -32081 (POLICY_BLOCKED)
@@ -218,11 +231,24 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 func TestERR004_NoSecretLeakageInErrors(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: This test requires:
-	// - Secret injection enabled with known secret value
-	// - Policy that blocks the call
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-err-004",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-secret-tool",
+				"kind": "deny",
+				"match": {"tool_name": {"glob": ["secret_tool"]}},
+				"effect": {"action": "BLOCK", "reason_code": "TEST_BLOCK", "message": "Blocked for ERR-004 test"}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("secret_tool", "A tool using secrets", nil)
 
 	if err := h.Start(); err != nil {
@@ -232,20 +258,17 @@ func TestERR004_NoSecretLeakageInErrors(t *testing.T) {
 
 	h.Initialize()
 
-	// Known secret values that should NEVER appear in errors
-	// (In real test, these would be configured secrets)
 	knownSecrets := []string{
 		"sk-secret-key-12345",
 		"ghp_github_token_abc",
 		"password123",
 	}
 
-	// Execute: Call tool that gets blocked
 	resp, _ := h.CallTool("secret_tool", nil)
 
 	wrapped := testharness.WrapResponse(resp)
 	if wrapped.IsSuccess() {
-		t.Skip("ERR-004: Tool was not blocked - needs policy configuration")
+		t.Fatal("ERR-004 FAILED: Tool should have been blocked by policy")
 	}
 
 	// Assert: Error message contains no secrets

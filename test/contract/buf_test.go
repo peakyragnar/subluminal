@@ -129,11 +129,14 @@ func TestBUF002_NoOOMOnLargePayload(t *testing.T) {
 
 	// Allow some memory growth but not 50x the payload size
 	maxAllowedGrowth := uint64(100 * 1024 * 1024) // 100 MiB
-	growth := memAfter.Alloc - memBefore.Alloc
-	if growth > maxAllowedGrowth {
-		t.Errorf("BUF-002 FAILED: Excessive memory growth during stress test\n"+
-			"  Per Interface-Pack §1.10, shim must handle large payloads without OOM\n"+
-			"  Memory growth: %d bytes (max allowed: %d)", growth, maxAllowedGrowth)
+	// Only check growth if memory increased (GC may have freed memory)
+	if memAfter.Alloc > memBefore.Alloc {
+		growth := memAfter.Alloc - memBefore.Alloc
+		if growth > maxAllowedGrowth {
+			t.Errorf("BUF-002 FAILED: Excessive memory growth during stress test\n"+
+				"  Per Interface-Pack §1.10, shim must handle large payloads without OOM\n"+
+				"  Memory growth: %d bytes (max allowed: %d)", growth, maxAllowedGrowth)
+		}
 	}
 }
 

@@ -48,6 +48,9 @@ func TestHASH001_CanonicalizationEquivalence(t *testing.T) {
 	h.CallTool("test_tool", argsA)
 	h.CallTool("test_tool", argsB)
 
+	// Stop harness to ensure all events are captured before reading
+	h.Stop()
+
 	// Get both tool_call_start events
 	toolCallStarts := h.EventSink.ByType("tool_call_start")
 	if len(toolCallStarts) != 2 {
@@ -106,6 +109,9 @@ func TestHASH002_CanonicalizationStability(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		h.CallTool("test_tool", fixedArgs)
 	}
+
+	// Stop harness to ensure all events are captured before reading
+	h.Stop()
 
 	// Assert: All hashes match golden value
 	toolCallStarts := h.EventSink.ByType("tool_call_start")

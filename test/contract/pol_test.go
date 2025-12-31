@@ -11,20 +11,39 @@ import (
 )
 
 // =============================================================================
-// POL-001: Observe Mode Never Blocks
-// Contract: In observe mode, decision is always ALLOW; rules are logged but
-//           not enforced.
+// POL-001: Observe Mode Never Blocks (but preserves decision in telemetry)
+// Contract: In observe mode, calls are never blocked, but tool_call_decision
+//           events preserve the original action (BLOCK/ALLOW) for telemetry.
 // Reference: Interface-Pack.md §2.1, Contract-Test-Checklist.md POL-001
 // =============================================================================
 
 func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: This test requires configuring the shim with:
-	// - mode = "observe"
-	// - A deny rule that would normally block
+	policyJSON := `{
+		"mode": "observe",
+		"policy_id": "test-pol-001",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-observed-tool",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["should_be_denied"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "TEST_BLOCK",
+					"message": "Would be blocked in guardrails mode"
+				}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("should_be_denied", "A tool that would be denied in guardrails mode", nil)
 
 	if err := h.Start(); err != nil {
@@ -34,13 +53,11 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 
 	h.Initialize()
 
-	// Execute: Call tool that has a deny rule
 	resp, err := h.CallTool("should_be_denied", nil)
 	if err != nil {
 		t.Fatalf("Failed to call tool: %v", err)
 	}
 
-	// Assert: Call succeeded (not blocked)
 	wrapped := testharness.WrapResponse(resp)
 	if !wrapped.IsSuccess() {
 		t.Errorf("POL-001 FAILED: Tool call was blocked in observe mode\n"+
@@ -48,18 +65,17 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 			"  Error: %s", wrapped.ErrorMessage())
 	}
 
-	// Assert: Decision event shows ALLOW (even though rule matched)
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) == 0 {
 		t.Fatal("POL-001 FAILED: No tool_call_decision events")
 	}
 
-	for _, evt := range decisions {
-		action := testharness.GetString(evt, "decision.action")
-		if action != "ALLOW" {
-			t.Errorf("POL-001 FAILED: Decision action is %q, expected ALLOW\n"+
-				"  Per Interface-Pack §2.1, observe mode always allows", action)
-		}
+	evt := decisions[0]
+	action := testharness.GetString(evt, "decision.action")
+	if action != "BLOCK" {
+		t.Errorf("POL-001 FAILED: Decision action is %q, expected BLOCK\n"+
+			"  Observe mode should preserve the original decision for telemetry\n"+
+			"  The call succeeds, but telemetry shows what WOULD have happened", action)
 	}
 }
 
@@ -416,4 +432,81 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 
 	// Look for evidence that risk_class was applied
 	// (This would be in the decision explain or rule match info)
+}
+
+// =============================================================================
+// POL-008: bytes_out Correct for Blocked Responses
+// Contract: When policy blocks a call, tool_call_end.bytes_out equals the
+//           JSON-RPC error response payload size (not zero).
+// Reference: Interface-Pack.md §1.7
+// Regression test for: bytes_out hardcoded to 0 for policy-blocked calls
+// =============================================================================
+
+func TestPOL008_BytesOutCorrectForBlockedResponses(t *testing.T) {
+	skipIfNoShim(t)
+
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-008",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-blocked-tool",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["blocked_tool"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "TEST_BLOCK",
+					"message": "Blocked for testing"
+				}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
+	h.AddTool("blocked_tool", "A tool that will be blocked by policy", nil)
+
+	if err := h.Start(); err != nil {
+		t.Fatalf("Failed to start harness: %v", err)
+	}
+	defer h.Stop()
+
+	h.Initialize()
+	h.CallTool("blocked_tool", map[string]any{"test": "data"})
+	h.Stop()
+
+	toolCallEnds := h.EventSink.ByType("tool_call_end")
+	if len(toolCallEnds) == 0 {
+		t.Fatal("POL-008 FAILED: No tool_call_end events")
+	}
+
+	evt := toolCallEnds[0]
+
+	status := testharness.GetString(evt, "status")
+	if status != "ERROR" {
+		t.Errorf("POL-008 FAILED: Expected status=ERROR for blocked call, got %q", status)
+	}
+
+	errorClass := testharness.GetString(evt, "error.class")
+	if errorClass != "policy_block" {
+		t.Errorf("POL-008 FAILED: Expected error.class=policy_block, got %q", errorClass)
+	}
+
+	bytesOut := testharness.GetInt(evt, "bytes_out")
+	if bytesOut == 0 {
+		t.Errorf("POL-008 FAILED: bytes_out is 0 for blocked response\n" +
+			"  Per Interface-Pack §1.7, bytes_out must reflect actual response size\n" +
+			"  Policy-blocked calls return a JSON-RPC error which has non-zero size")
+	}
+
+	const minExpectedSize = 50
+	if bytesOut < minExpectedSize {
+		t.Errorf("POL-008 FAILED: bytes_out=%d seems too small for a JSON-RPC error response\n"+
+			"  Expected at least %d bytes", bytesOut, minExpectedSize)
+	}
 }

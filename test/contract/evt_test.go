@@ -12,6 +12,7 @@ package contract
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/subluminal/subluminal/pkg/testharness"
@@ -22,12 +23,24 @@ import (
 var shimPath = getShimPath()
 
 func getShimPath() string {
-	// Allow override via environment
 	if p := os.Getenv("SUBLUMINAL_SHIM_PATH"); p != "" {
 		return p
 	}
-	// Default path (relative to repo root)
-	return "./bin/shim"
+	return filepath.Join(findRepoRoot(), "bin", "shim")
+}
+
+func findRepoRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for dir != filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	return "."
 }
 
 // skipIfNoShim skips the test if the shim binary doesn't exist.
@@ -369,7 +382,7 @@ func TestEVT007_LatencyMSPresentAndSane(t *testing.T) {
 
 		// Check: latency_ms exists and is reasonable
 		if !testharness.HasField(evt, "latency_ms") {
-			t.Errorf("EVT-007 FAILED: tool_call_end missing latency_ms\n"+
+			t.Errorf("EVT-007 FAILED: tool_call_end missing latency_ms\n" +
 				"  Per Interface-Pack §1.7, latency_ms is required")
 			continue
 		}
@@ -460,9 +473,9 @@ func TestEVT008_StatusErrorClassTaxonomy(t *testing.T) {
 func containsStackTrace(s string) bool {
 	// Simple heuristics for stack traces
 	patterns := []string{
-		"at ", // JavaScript style
-		".go:", // Go style
-		"Traceback", // Python style
+		"at ",                 // JavaScript style
+		".go:",                // Go style
+		"Traceback",           // Python style
 		"Exception in thread", // Java style
 	}
 	for _, p := range patterns {
@@ -478,67 +491,139 @@ func contains(s, substr string) bool {
 }
 
 // =============================================================================
-// EVT-009: run_end Summary Counts Correct
-// Contract: summary.calls_total, allowed/blocked counts match observed decisions;
-//           duration_ms present.
+// EVT-009: run_end Summary Counts Correct (INVARIANT TEST)
+// Contract: run_end.summary.* must match counts derived from emitted events.
+//           This is an invariant test that catches any counter/summary drift.
 // Reference: Interface-Pack.md §1.8, Contract-Test-Checklist.md EVT-009
+//
+// Invariants tested:
+//   - calls_total == count(tool_call_end)
+//   - calls_blocked == count(tool_call_end where error.class == "policy_block")
+//   - calls_allowed == calls_total - calls_blocked
+//   - errors_total == count(tool_call_end where status != "OK")
+//   - duration_ms >= 0
 // =============================================================================
 
 func TestEVT009_RunEndSummaryCountsCorrect(t *testing.T) {
 	skipIfNoShim(t)
 
-	h := newShimHarness()
+	// Policy: guardrails mode, blocks "blocked_tool", allows everything else
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-evt-009",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-blocked-tool",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["blocked_tool"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "TEST_BLOCK",
+					"message": "Blocked for EVT-009 test"
+				}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("allowed_tool", "An allowed tool", nil)
-	// Note: To test blocked calls, we'd need a policy that blocks some calls
+	h.AddTool("blocked_tool", "A tool that will be blocked", nil)
 
 	if err := h.Start(); err != nil {
 		t.Fatalf("Failed to start harness: %v", err)
 	}
 	defer h.Stop()
 
-	// Execute: Run with 5 calls (checklist says 3 OK, 2 blocked - needs policy)
+	// Execute: 3 allowed calls + 2 blocked calls = 5 total
 	h.Initialize()
-	for i := 0; i < 5; i++ {
-		h.CallTool("allowed_tool", nil)
-	}
+	h.CallTool("allowed_tool", map[string]any{"i": 1})
+	h.CallTool("allowed_tool", map[string]any{"i": 2})
+	h.CallTool("blocked_tool", map[string]any{"i": 3})
+	h.CallTool("allowed_tool", map[string]any{"i": 4})
+	h.CallTool("blocked_tool", map[string]any{"i": 5})
 
-	// Stop the harness to trigger run_end event
 	h.Stop()
 
-	// Get run_end event
+	// === Derive expected counts from emitted events ===
+	toolCallEnds := h.EventSink.ByType("tool_call_end")
+	expectedCallsTotal := len(toolCallEnds)
+
+	expectedCallsBlocked := 0
+	expectedErrorsTotal := 0
+	for _, evt := range toolCallEnds {
+		status := testharness.GetString(evt, "status")
+		if status != "OK" {
+			expectedErrorsTotal++
+		}
+		errorClass := testharness.GetString(evt, "error.class")
+		if errorClass == "policy_block" {
+			expectedCallsBlocked++
+		}
+	}
+	expectedCallsAllowed := expectedCallsTotal - expectedCallsBlocked
+
+	// === Get run_end summary ===
 	runEnds := h.EventSink.ByType("run_end")
 	if len(runEnds) == 0 {
 		t.Fatal("EVT-009 FAILED: No run_end event")
 	}
-
 	runEnd := runEnds[0]
 
-	// Assert: summary.calls_total matches actual calls
+	// === Assert invariants ===
+
+	// Invariant 1: calls_total == count(tool_call_end)
 	callsTotal := testharness.GetInt(runEnd, "run.summary.calls_total")
-	if callsTotal != 5 {
-		t.Errorf("EVT-009 FAILED: summary.calls_total=%d, expected 5\n"+
-			"  Per Interface-Pack §1.8, calls_total must match actual call count",
-			callsTotal)
+	if callsTotal != expectedCallsTotal {
+		t.Errorf("EVT-009 FAILED: summary.calls_total=%d, expected %d (from tool_call_end count)\n"+
+			"  Per Interface-Pack §1.8, calls_total must match emitted tool_call_end events",
+			callsTotal, expectedCallsTotal)
 	}
 
-	// Assert: duration_ms is present
+	// Invariant 2: calls_blocked == count(tool_call_end where error.class == "policy_block")
+	callsBlocked := testharness.GetInt(runEnd, "run.summary.calls_blocked")
+	if callsBlocked != expectedCallsBlocked {
+		t.Errorf("EVT-009 FAILED: summary.calls_blocked=%d, expected %d (from policy_block count)\n"+
+			"  Per Interface-Pack §1.8, calls_blocked must match policy-blocked events",
+			callsBlocked, expectedCallsBlocked)
+	}
+
+	// Invariant 3: calls_allowed == calls_total - calls_blocked
+	callsAllowed := testharness.GetInt(runEnd, "run.summary.calls_allowed")
+	if callsAllowed != expectedCallsAllowed {
+		t.Errorf("EVT-009 FAILED: summary.calls_allowed=%d, expected %d\n"+
+			"  Per Interface-Pack §1.8, calls_allowed must equal calls_total - calls_blocked",
+			callsAllowed, expectedCallsAllowed)
+	}
+
+	// Invariant 4: errors_total == count(tool_call_end where status != "OK")
+	errorsTotal := testharness.GetInt(runEnd, "run.summary.errors_total")
+	if errorsTotal != expectedErrorsTotal {
+		t.Errorf("EVT-009 FAILED: summary.errors_total=%d, expected %d (from non-OK status count)\n"+
+			"  Per Interface-Pack §1.8, errors_total must match non-OK tool_call_end events\n"+
+			"  This includes policy blocks (status=ERROR), timeouts, and cancelled calls",
+			errorsTotal, expectedErrorsTotal)
+	}
+
+	// Invariant 5: duration_ms >= 0
 	if !testharness.HasField(runEnd, "run.summary.duration_ms") {
 		t.Error("EVT-009 FAILED: run_end missing summary.duration_ms\n" +
 			"  Per Interface-Pack §1.8, duration_ms is required")
 	}
-
-	// Assert: duration_ms is reasonable (not negative)
 	durationMS := testharness.GetInt(runEnd, "run.summary.duration_ms")
 	if durationMS < 0 {
 		t.Errorf("EVT-009 FAILED: summary.duration_ms is negative (%d)", durationMS)
 	}
 
-	// Assert: calls_allowed + calls_blocked = calls_total
-	callsAllowed := testharness.GetInt(runEnd, "run.summary.calls_allowed")
-	callsBlocked := testharness.GetInt(runEnd, "run.summary.calls_blocked")
+	// Invariant 6: calls_allowed + calls_blocked == calls_total (consistency check)
 	if callsAllowed+callsBlocked != callsTotal {
 		t.Errorf("EVT-009 FAILED: calls_allowed(%d) + calls_blocked(%d) != calls_total(%d)\n"+
-			"  Per Interface-Pack §1.8, counts must be consistent",
+			"  Per Interface-Pack §1.8, counts must be internally consistent",
 			callsAllowed, callsBlocked, callsTotal)
 	}
 }

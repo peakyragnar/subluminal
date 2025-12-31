@@ -15,6 +15,7 @@ go build -o bin/shim ./cmd/shim
 go build -o bin/fakemcp ./cmd/fakemcp
 
 echo "=== CI: Running tests ==="
+export SUBLUMINAL_SHIM_PATH="$(pwd)/bin/shim"
 go test -v ./...
 
 echo "=== CI: All checks passed ==="
