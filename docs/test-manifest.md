@@ -6,6 +6,12 @@ This document captures the COMPLETE test suite for Subluminal - every test that 
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
+│                 LAYER 4: Integration Tests                       │
+│    (Cross-feature: Policy+Shim, Importer+Shim, E2E pipeline)    │
+│                  19 tests - NOT BUILT YET                        │
+└─────────────────────────────────────────────────────────────────┘
+                              ↑
+┌─────────────────────────────────────────────────────────────────┐
 │                    LAYER 3: Component Tests                      │
 │         (Ledger, Importer - require full system)                │
 │                     4 tests - NOT BUILT YET                      │
@@ -14,7 +20,7 @@ This document captures the COMPLETE test suite for Subluminal - every test that 
 ┌─────────────────────────────────────────────────────────────────┐
 │                 LAYER 2: Contract Tests                          │
 │      (Full shim integration - Agent → Shim → Server)            │
-│              40 tests implemented, 10 skipped                    │
+│              40 tests implemented, 18 skipped                    │
 └─────────────────────────────────────────────────────────────────┘
                               ↑
 ┌─────────────────────────────────────────────────────────────────┐
@@ -197,21 +203,117 @@ These require full system components that don't exist yet.
 
 ---
 
+## Layer 4: Integration Tests (NOT YET BUILT)
+
+These test cross-feature interactions. Each validates that two or more components work correctly together.
+
+### Policy + Shim Integration (POL-INT) - 3 tests
+
+| ID | Priority | Description | Blocked By |
+|----|----------|-------------|------------|
+| POL-INT-001 | P0 | Policy BLOCK decision produces correct JSON-RPC error AND tool_call_decision event | Policy engine |
+| POL-INT-002 | P0 | Policy THROTTLE returns backoff_ms in error AND events reflect throttle count | Policy engine |
+| POL-INT-003 | P0 | Policy REJECT_WITH_HINT returns hint object AND hint_issued event emitted | Policy engine |
+
+**What these catch:** Shim might apply policy correctly but emit wrong events, or vice versa.
+
+### Policy State Interactions (POL-STATE) - 4 tests
+
+| ID | Priority | Description | Blocked By |
+|----|----------|-------------|------------|
+| POL-STATE-001 | P0 | Budget exhaustion + breaker: both accumulate independently, first to trigger wins | Policy engine |
+| POL-STATE-002 | P0 | Rate limit + budget: rate limit delays, budget counts actual calls (not attempts) | Policy engine |
+| POL-STATE-003 | P1 | Dedupe + budget: dedupe block doesn't decrement budget counter | Policy engine |
+| POL-STATE-004 | P1 | Multiple rules match same call: evaluation order is deterministic | Policy engine |
+
+**What these catch:** State corruption when multiple policy rules fire on the same call.
+
+### Importer + Shim Integration (IMP-INT) - 3 tests
+
+| ID | Priority | Description | Blocked By |
+|----|----------|-------------|------------|
+| IMP-INT-001 | P0 | After `sub import claude`, MCP server entries route through shim correctly | Importer |
+| IMP-INT-002 | P0 | Imported config preserves all original server names in events | Importer |
+| IMP-INT-003 | P0 | `sub restore` returns to original config; shim no longer in path | Importer |
+
+**What these catch:** Config rewrite might look correct but shim doesn't actually intercept.
+
+### Ledger + Events Integration (LED-INT) - 3 tests
+
+| ID | Priority | Description | Blocked By |
+|----|----------|-------------|------------|
+| LED-INT-001 | P0 | Events emitted by shim are queryable in ledger with correct fields | Ledger |
+| LED-INT-002 | P0 | Policy decisions (BLOCK/THROTTLE/HINT) stored with rule_id and reason_code | Ledger + Policy |
+| LED-INT-003 | P1 | Large payload events stored with truncated previews, full metadata intact | Ledger |
+
+**What these catch:** Event schema mismatch between producer (shim) and consumer (ledger).
+
+### End-to-End Pipeline (E2E) - 4 tests
+
+| ID | Priority | Description | Blocked By |
+|----|----------|-------------|------------|
+| E2E-001 | P0 | Full path: import → tool call → event → ledger → query returns correct data | All components |
+| E2E-002 | P0 | Full path with policy block: import → blocked call → error to agent → decision in ledger | All components |
+| E2E-003 | P0 | `sub tail` shows live events during active tool calls | CLI + Ledger |
+| E2E-004 | P1 | Multiple concurrent runs maintain isolated state and separate run_ids in ledger | All components |
+
+**What these catch:** Components work in isolation but fail when connected.
+
+### Secret Flow Integration (SEC-INT) - 2 tests
+
+| ID | Priority | Description | Blocked By |
+|----|----------|-------------|------------|
+| SEC-INT-001 | P0 | Secret injected at shim → used by upstream → NOT in events → NOT in ledger | Ledger |
+| SEC-INT-002 | P0 | Secret in policy error hint text is redacted before reaching agent AND ledger | Policy + Ledger |
+
+**What these catch:** Secret leakage at integration boundaries (not just within one component).
+
+---
+
+### Integration Test Summary
+
+| Category | Total | Priority P0 | Priority P1 |
+|----------|-------|-------------|-------------|
+| POL-INT | 3 | 3 | 0 |
+| POL-STATE | 4 | 2 | 2 |
+| IMP-INT | 3 | 3 | 0 |
+| LED-INT | 3 | 2 | 1 |
+| E2E | 4 | 3 | 1 |
+| SEC-INT | 2 | 2 | 0 |
+| **TOTAL** | **19** | **15** | **4** |
+
+---
+
+### When to Build Integration Tests
+
+Integration tests should be built AFTER the component they depend on:
+
+| Phase | Components Ready | Integration Tests Unblocked |
+|-------|------------------|----------------------------|
+| After Policy Engine | Shim + Policy | POL-INT-*, POL-STATE-* |
+| After Importer | Shim + Importer | IMP-INT-* |
+| After Ledger | Shim + Ledger | LED-INT-* |
+| After All | All components | E2E-*, SEC-INT-* |
+
+---
+
 ## Summary Counts
 
 | Category | Total | Implemented | Passing | Blocked |
 |----------|-------|-------------|---------|---------|
 | Unit Tests (Layer 1) | 35 | 35 | 35 | 0 |
-| Contract Tests P0 (Layer 2) | 35 | 35 | 0* | 4 |
-| Contract Tests P1 (Layer 2) | 5 | 5 | 0* | 0 |
-| **TOTAL** | **75** | **75** | **35** | **4** |
+| Contract Tests P0 (Layer 2) | 35 | 35 | 20 | 4 |
+| Contract Tests P1 (Layer 2) | 5 | 5 | 2 | 0 |
+| Component Tests (Layer 3) | 4 | 0 | 0 | 4 |
+| Integration Tests P0 (Layer 4) | 15 | 0 | 0 | 15 |
+| Integration Tests P1 (Layer 4) | 4 | 0 | 0 | 4 |
+| **TOTAL** | **98** | **75** | **57** | **27** |
 
-*All 40 contract tests currently skip because shim binary (`./bin/shim`) not built yet.
-
-**Note:** The original "54 tests" figure was incorrect. Actual counts:
-- 40 contract tests in Contract-Test-Checklist.md
-- 35 unit tests in pkg/*_test.go
-- 75 total tests
+**Current status (as of reset):**
+- Unit tests: All passing
+- Contract tests: 22/40 passing (18 skipped - need policy engine, importer, ledger)
+- Component tests: Not implemented (blocked by missing components)
+- Integration tests: Not implemented (blocked by missing components)
 
 ---
 
@@ -234,6 +336,9 @@ go run ./cmd/teststatus
 # Must pass for v0.1 release
 go test ./pkg/...
 go test ./test/contract/... -run 'Test(EVT|HASH|BUF|POL|ERR|SEC|PROC|ID|ADAPT)0'
+
+# Layer 4: Integration tests (when implemented)
+go test ./test/integration/...
 ```
 
 ### Quick Smoke Test
@@ -268,16 +373,25 @@ go run ./cmd/teststatus          # Full integration status
 
 ## What Needs To Be Built
 
-### To Unblock Contract Tests
-1. Build the shim binary (`./bin/shim`)
-2. All 40 contract tests will run instead of skip
+### To Unblock Contract Tests (Layer 2)
+1. ~~Build the shim binary (`./bin/shim`)~~ ✓ DONE
+2. Build policy engine → unblocks POL-002 through POL-007, ERR-001 through ERR-004, ADAPT-003
+3. Build importer → unblocks IMP-001, IMP-002
+4. Build ledger → unblocks LED-001, LED-002
 
-### To Unblock Component Tests
+### To Unblock Component Tests (Layer 3)
 1. Build `ledgerd` → unblocks LED-001, LED-002
 2. Build `sub import` → unblocks IMP-001, IMP-002
 3. Build second adapter (HTTP?) → unblocks ADAPT-002
 
+### To Unblock Integration Tests (Layer 4)
+1. Build policy engine → unblocks POL-INT-*, POL-STATE-*
+2. Build importer → unblocks IMP-INT-*
+3. Build ledger → unblocks LED-INT-*
+4. Build all components → unblocks E2E-*, SEC-INT-*
+
 ### To Complete the Suite
-1. All P0 tests passing
+1. All P0 tests passing across all layers
 2. Golden value fixtures in testdata/fixtures/
-3. Mutation testing framework (future)
+3. Integration test file: test/integration/*_test.go
+4. Mutation testing framework (future)
