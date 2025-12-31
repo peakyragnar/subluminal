@@ -205,7 +205,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		Policy: p.policy.Info,
 	}
 
-	blocked := p.policy.Mode != event.RunModeObserve && decision.Action == event.DecisionBlock
+	blocked := p.policy.Mode != event.RunModeObserve && decision.Action != event.DecisionAllow
 
 	// Track pending call for response matching
 	if id, ok := GetRequestID(req); ok && !blocked {
@@ -229,16 +229,18 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		p.state.IncrementBlocked()
 		p.state.IncrementErrors()
 		latencyMS := p.state.EndCall(callID)
+
+		errCode, errClass := policyErrorCodeAndClass(decision.Action)
 		errDetail := &event.ErrorDetail{
-			Class:   "policy_block",
+			Class:   errClass,
 			Message: decision.Explain.Summary,
-			Code:    ErrCodePolicyBlocked,
+			Code:    errCode,
 		}
 
 		var payload []byte
 		if id, ok := GetRequestID(req); ok {
 			errData := p.policyErrorData(callID, toolName, argsHash, decision)
-			resp := NewErrorResponse(id, ErrCodePolicyBlocked, decision.Explain.Summary, errData)
+			resp := NewErrorResponse(id, errCode, decision.Explain.Summary, errData)
 			if p, err := json.Marshal(resp); err == nil {
 				payload = p
 			}
@@ -429,6 +431,21 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 				"policy_hash":    decision.Policy.PolicyHash,
 			},
 		},
+	}
+}
+
+func policyErrorCodeAndClass(action event.DecisionAction) (int, string) {
+	switch action {
+	case event.DecisionBlock:
+		return ErrCodePolicyBlocked, "policy_block"
+	case event.DecisionThrottle:
+		return ErrCodePolicyThrottled, "policy_throttle"
+	case event.DecisionRejectWithHint:
+		return ErrCodeRejectWithHint, "policy_reject"
+	case event.DecisionTerminateRun:
+		return ErrCodeRunTerminated, "policy_terminate"
+	default:
+		return ErrCodePolicyBlocked, "policy_block"
 	}
 }
 
