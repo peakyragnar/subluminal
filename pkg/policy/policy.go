@@ -19,12 +19,12 @@ type Bundle struct {
 }
 
 type Rule struct {
-	RuleID   string         `json:"rule_id"`
-	Kind     string         `json:"kind"`
-	Enabled  *bool          `json:"enabled"`
+	RuleID   string        `json:"rule_id"`
+	Kind     string        `json:"kind"`
+	Enabled  *bool         `json:"enabled"`
 	Severity event.Severity `json:"severity"`
-	Match    Match          `json:"match"`
-	Effect   Effect         `json:"effect"`
+	Match    Match         `json:"match"`
+	Effect   Effect        `json:"effect"`
 }
 
 type Match struct {
@@ -115,7 +115,7 @@ func (b Bundle) Decide(serverName, toolName string) Decision {
 		if action == "" {
 			action = actionFromKind(rule.Kind)
 		}
-		if !isValidAction(action) {
+		if action != event.DecisionAllow && action != event.DecisionBlock {
 			continue
 		}
 
@@ -223,16 +223,10 @@ func normalizeSeverity(severity event.Severity) event.Severity {
 
 func defaultReason(action event.DecisionAction) string {
 	switch action {
-	case event.DecisionAllow:
-		return "POLICY_ALLOW"
 	case event.DecisionBlock:
 		return "POLICY_BLOCK"
-	case event.DecisionThrottle:
-		return "POLICY_THROTTLE"
-	case event.DecisionRejectWithHint:
-		return "POLICY_REJECT"
-	case event.DecisionTerminateRun:
-		return "POLICY_TERMINATE"
+	case event.DecisionAllow:
+		return "POLICY_ALLOW"
 	default:
 		return "POLICY_DECISION"
 	}
@@ -240,16 +234,10 @@ func defaultReason(action event.DecisionAction) string {
 
 func defaultSummary(action event.DecisionAction) string {
 	switch action {
-	case event.DecisionAllow:
-		return "Allowed by policy"
 	case event.DecisionBlock:
 		return "Blocked by policy"
-	case event.DecisionThrottle:
-		return "Throttled by policy"
-	case event.DecisionRejectWithHint:
-		return "Rejected with hint by policy"
-	case event.DecisionTerminateRun:
-		return "Run terminated by policy"
+	case event.DecisionAllow:
+		return "Allowed by policy"
 	default:
 		return "Policy decision"
 	}
@@ -271,14 +259,4 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func isValidAction(action event.DecisionAction) bool {
-	switch action {
-	case event.DecisionAllow, event.DecisionBlock, event.DecisionThrottle,
-		event.DecisionRejectWithHint, event.DecisionTerminateRun:
-		return true
-	default:
-		return false
-	}
 }
