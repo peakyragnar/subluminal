@@ -16,5 +16,10 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Build binaries
+        run: |
+          go build -o bin/shim ./cmd/shim
+          go build -o bin/fakemcp ./cmd/fakemcp
+
       - name: Run tests
         run: go test -v ./...
