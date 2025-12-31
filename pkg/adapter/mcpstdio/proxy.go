@@ -234,16 +234,15 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 			Code:    ErrCodePolicyBlocked,
 		}
 
-		var bytesOut int
 		var payload []byte
 		if id, ok := GetRequestID(req); ok {
 			errData := p.policyErrorData(callID, toolName, argsHash, decision)
 			resp := NewErrorResponse(id, ErrCodePolicyBlocked, decision.Explain.Summary, errData)
 			if p, err := json.Marshal(resp); err == nil {
 				payload = p
-				bytesOut = len(payload)
 			}
 		}
+		bytesOut := len(payload)
 
 		p.emitToolCallEnd(callID, toolName, argsHash, event.CallStatusError, latencyMS, bytesOut, errDetail)
 
