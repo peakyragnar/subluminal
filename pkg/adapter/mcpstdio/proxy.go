@@ -204,9 +204,6 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		},
 		Policy: p.policy.Info,
 	}
-	if p.policy.Mode == event.RunModeObserve {
-		decision.Action = event.DecisionAllow
-	}
 
 	blocked := p.policy.Mode != event.RunModeObserve && decision.Action == event.DecisionBlock
 

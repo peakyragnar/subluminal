@@ -11,20 +11,39 @@ import (
 )
 
 // =============================================================================
-// POL-001: Observe Mode Never Blocks
-// Contract: In observe mode, decision is always ALLOW; rules are logged but
-//           not enforced.
+// POL-001: Observe Mode Never Blocks (but preserves decision in telemetry)
+// Contract: In observe mode, calls are never blocked, but tool_call_decision
+//           events preserve the original action (BLOCK/ALLOW) for telemetry.
 // Reference: Interface-Pack.md §2.1, Contract-Test-Checklist.md POL-001
 // =============================================================================
 
 func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: This test requires configuring the shim with:
-	// - mode = "observe"
-	// - A deny rule that would normally block
+	policyJSON := `{
+		"mode": "observe",
+		"policy_id": "test-pol-001",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-observed-tool",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["should_be_denied"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "TEST_BLOCK",
+					"message": "Would be blocked in guardrails mode"
+				}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("should_be_denied", "A tool that would be denied in guardrails mode", nil)
 
 	if err := h.Start(); err != nil {
@@ -34,13 +53,11 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 
 	h.Initialize()
 
-	// Execute: Call tool that has a deny rule
 	resp, err := h.CallTool("should_be_denied", nil)
 	if err != nil {
 		t.Fatalf("Failed to call tool: %v", err)
 	}
 
-	// Assert: Call succeeded (not blocked)
 	wrapped := testharness.WrapResponse(resp)
 	if !wrapped.IsSuccess() {
 		t.Errorf("POL-001 FAILED: Tool call was blocked in observe mode\n"+
@@ -48,18 +65,17 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 			"  Error: %s", wrapped.ErrorMessage())
 	}
 
-	// Assert: Decision event shows ALLOW (even though rule matched)
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) == 0 {
 		t.Fatal("POL-001 FAILED: No tool_call_decision events")
 	}
 
-	for _, evt := range decisions {
-		action := testharness.GetString(evt, "decision.action")
-		if action != "ALLOW" {
-			t.Errorf("POL-001 FAILED: Decision action is %q, expected ALLOW\n"+
-				"  Per Interface-Pack §2.1, observe mode always allows", action)
-		}
+	evt := decisions[0]
+	action := testharness.GetString(evt, "decision.action")
+	if action != "BLOCK" {
+		t.Errorf("POL-001 FAILED: Decision action is %q, expected BLOCK\n"+
+			"  Observe mode should preserve the original decision for telemetry\n"+
+			"  The call succeeds, but telemetry shows what WOULD have happened", action)
 	}
 }
 
