@@ -12,6 +12,7 @@ package contract
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/subluminal/subluminal/pkg/testharness"
@@ -22,12 +23,24 @@ import (
 var shimPath = getShimPath()
 
 func getShimPath() string {
-	// Allow override via environment
 	if p := os.Getenv("SUBLUMINAL_SHIM_PATH"); p != "" {
 		return p
 	}
-	// Default path (relative to repo root)
-	return "./bin/shim"
+	return filepath.Join(findRepoRoot(), "bin", "shim")
+}
+
+func findRepoRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for dir != filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	return "."
 }
 
 // skipIfNoShim skips the test if the shim binary doesn't exist.
@@ -369,7 +382,7 @@ func TestEVT007_LatencyMSPresentAndSane(t *testing.T) {
 
 		// Check: latency_ms exists and is reasonable
 		if !testharness.HasField(evt, "latency_ms") {
-			t.Errorf("EVT-007 FAILED: tool_call_end missing latency_ms\n"+
+			t.Errorf("EVT-007 FAILED: tool_call_end missing latency_ms\n" +
 				"  Per Interface-Pack §1.7, latency_ms is required")
 			continue
 		}
@@ -460,9 +473,9 @@ func TestEVT008_StatusErrorClassTaxonomy(t *testing.T) {
 func containsStackTrace(s string) bool {
 	// Simple heuristics for stack traces
 	patterns := []string{
-		"at ", // JavaScript style
-		".go:", // Go style
-		"Traceback", // Python style
+		"at ",                 // JavaScript style
+		".go:",                // Go style
+		"Traceback",           // Python style
 		"Exception in thread", // Java style
 	}
 	for _, p := range patterns {

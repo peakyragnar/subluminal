@@ -417,3 +417,80 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	// Look for evidence that risk_class was applied
 	// (This would be in the decision explain or rule match info)
 }
+
+// =============================================================================
+// POL-008: bytes_out Correct for Blocked Responses
+// Contract: When policy blocks a call, tool_call_end.bytes_out equals the
+//           JSON-RPC error response payload size (not zero).
+// Reference: Interface-Pack.md §1.7
+// Regression test for: bytes_out hardcoded to 0 for policy-blocked calls
+// =============================================================================
+
+func TestPOL008_BytesOutCorrectForBlockedResponses(t *testing.T) {
+	skipIfNoShim(t)
+
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-008",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-blocked-tool",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["blocked_tool"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "TEST_BLOCK",
+					"message": "Blocked for testing"
+				}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
+	h.AddTool("blocked_tool", "A tool that will be blocked by policy", nil)
+
+	if err := h.Start(); err != nil {
+		t.Fatalf("Failed to start harness: %v", err)
+	}
+	defer h.Stop()
+
+	h.Initialize()
+	h.CallTool("blocked_tool", map[string]any{"test": "data"})
+	h.Stop()
+
+	toolCallEnds := h.EventSink.ByType("tool_call_end")
+	if len(toolCallEnds) == 0 {
+		t.Fatal("POL-008 FAILED: No tool_call_end events")
+	}
+
+	evt := toolCallEnds[0]
+
+	status := testharness.GetString(evt, "status")
+	if status != "ERROR" {
+		t.Errorf("POL-008 FAILED: Expected status=ERROR for blocked call, got %q", status)
+	}
+
+	errorClass := testharness.GetString(evt, "error.class")
+	if errorClass != "policy_block" {
+		t.Errorf("POL-008 FAILED: Expected error.class=policy_block, got %q", errorClass)
+	}
+
+	bytesOut := testharness.GetInt(evt, "bytes_out")
+	if bytesOut == 0 {
+		t.Errorf("POL-008 FAILED: bytes_out is 0 for blocked response\n" +
+			"  Per Interface-Pack §1.7, bytes_out must reflect actual response size\n" +
+			"  Policy-blocked calls return a JSON-RPC error which has non-zero size")
+	}
+
+	const minExpectedSize = 50
+	if bytesOut < minExpectedSize {
+		t.Errorf("POL-008 FAILED: bytes_out=%d seems too small for a JSON-RPC error response\n"+
+			"  Expected at least %d bytes", bytesOut, minExpectedSize)
+	}
+}
