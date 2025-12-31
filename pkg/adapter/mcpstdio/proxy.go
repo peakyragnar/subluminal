@@ -236,14 +236,22 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 			Message: decision.Explain.Summary,
 			Code:    ErrCodePolicyBlocked,
 		}
-		p.emitToolCallEnd(callID, toolName, argsHash, event.CallStatusError, latencyMS, 0, errDetail)
 
+		var bytesOut int
+		var payload []byte
 		if id, ok := GetRequestID(req); ok {
 			errData := p.policyErrorData(callID, toolName, argsHash, decision)
 			resp := NewErrorResponse(id, ErrCodePolicyBlocked, decision.Explain.Summary, errData)
-			if payload, err := json.Marshal(resp); err == nil {
-				p.forwardToAgent(payload)
+			if p, err := json.Marshal(resp); err == nil {
+				payload = p
+				bytesOut = len(payload)
 			}
+		}
+
+		p.emitToolCallEnd(callID, toolName, argsHash, event.CallStatusError, latencyMS, bytesOut, errDetail)
+
+		if payload != nil {
+			p.forwardToAgent(payload)
 		}
 		return false
 	}
@@ -408,13 +416,13 @@ func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int
 func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision event.Decision) map[string]any {
 	return map[string]any{
 		"subluminal": map[string]any{
-			"v":          core.InterfaceVersion,
-			"action":     decision.Action,
-			"rule_id":    decision.RuleID,
+			"v":           core.InterfaceVersion,
+			"action":      decision.Action,
+			"rule_id":     decision.RuleID,
 			"reason_code": decision.Explain.ReasonCode,
-			"summary":    decision.Explain.Summary,
-			"run_id":     p.identity.RunID,
-			"call_id":    callID,
+			"summary":     decision.Explain.Summary,
+			"run_id":      p.identity.RunID,
+			"call_id":     callID,
 			"server_name": p.serverName,
 			"tool_name":   toolName,
 			"args_hash":   argsHash,
