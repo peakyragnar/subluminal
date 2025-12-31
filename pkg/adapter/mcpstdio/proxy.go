@@ -227,6 +227,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 
 	if blocked {
 		p.state.IncrementBlocked()
+		p.state.IncrementErrors()
 		latencyMS := p.state.EndCall(callID)
 		errDetail := &event.ErrorDetail{
 			Class:   "policy_block",
