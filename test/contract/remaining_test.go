@@ -277,9 +277,24 @@ func TestADAPT002_CoreIsProtocolAgnostic(t *testing.T) {
 func TestADAPT003_AdapterFormatsErrorsCorrectly(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: Requires policy that blocks calls
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-adapt-003",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-blocked-tool",
+				"kind": "deny",
+				"match": {"tool_name": {"glob": ["blocked_tool"]}},
+				"effect": {"action": "BLOCK", "reason_code": "TEST_BLOCK", "message": "Blocked for ADAPT-003 test"}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("blocked_tool", "A blocked tool", nil)
 
 	if err := h.Start(); err != nil {
@@ -292,7 +307,7 @@ func TestADAPT003_AdapterFormatsErrorsCorrectly(t *testing.T) {
 
 	wrapped := testharness.WrapResponse(resp)
 	if wrapped.IsSuccess() {
-		t.Skip("ADAPT-003: Tool not blocked - needs policy configuration")
+		t.Fatal("ADAPT-003 FAILED: Tool should have been blocked by policy")
 	}
 
 	// Assert: Error is valid JSON-RPC format
@@ -321,4 +336,3 @@ func TestADAPT003_AdapterFormatsErrorsCorrectly(t *testing.T) {
 		}
 	}
 }
-
