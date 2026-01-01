@@ -505,6 +505,10 @@ func normalizeRateLimit(effect *RateLimitEffect) rateLimitConfig {
 	if config.OnLimit == "" {
 		config.OnLimit = event.DecisionThrottle
 	}
+	// Default backoff_ms when throttling - clients need to know how long to wait (Interface-Pack §2.5, ERR-002)
+	if config.OnLimit == event.DecisionThrottle && config.BackoffMS <= 0 {
+		config.BackoffMS = 1000
+	}
 
 	return config
 }
