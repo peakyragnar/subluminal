@@ -240,7 +240,7 @@ func TestERR004_NoSecretLeakageInErrors(t *testing.T) {
 				"rule_id": "deny-secret-tool",
 				"kind": "deny",
 				"match": {"tool_name": {"glob": ["secret_tool"]}},
-				"effect": {"action": "BLOCK", "reason_code": "TEST_BLOCK", "message": "Blocked for ERR-004 test"}
+				"effect": {"action": "BLOCK", "reason_code": "TEST_BLOCK", "message": "Blocked for ERR-004 test: sk-secret-key-12345 ghp_github_token_abc password123"}
 			}
 		]
 	}`
