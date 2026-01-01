@@ -31,3 +31,5 @@ go.work
 # Build cache
 .cache/
 .cache/
+.gocache/
+.gomodcache/

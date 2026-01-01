@@ -7,6 +7,11 @@
 #
 set -euo pipefail
 
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/subluminal"
+export GOCACHE="$CACHE_ROOT/go-build"
+export GOMODCACHE="$CACHE_ROOT/gomod"
+mkdir -p "$GOCACHE" "$GOMODCACHE"
+
 echo "=== CI: Go version ==="
 go version
 
