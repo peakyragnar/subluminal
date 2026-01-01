@@ -324,14 +324,33 @@ func TestPOL004_TokenBucketRateLimitThrottle(t *testing.T) {
 func TestPOL005_BreakerRepeatThresholdTriggers(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Skip in v0.1: This test requires policy enforcement which is v0.2+
-	// v0.1 is observe mode only - all calls are allowed
-	t.Skip("POL-005: Requires policy enforcement (v0.2+)")
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-005",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "breaker-repeat",
+				"kind": "breaker",
+				"match": {
+					"tool_name": {"glob": ["repetitive_tool"]}
+				},
+				"effect": {
+					"breaker": {
+						"scope": "tool",
+						"repeat_threshold": 5,
+						"repeat_window_ms": 10000,
+						"on_trip": "BLOCK"
+					}
+				}
+			}
+		]
+	}`
 
-	// Note: This test requires a policy with:
-	// - breaker rule: repeat_threshold=5 within 10s window
-
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("repetitive_tool", "A tool with breaker", nil)
 
 	if err := h.Start(); err != nil {

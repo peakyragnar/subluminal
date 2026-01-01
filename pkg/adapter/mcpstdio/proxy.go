@@ -207,7 +207,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	}
 
 	enforced := p.policy.Mode != event.RunModeObserve
-	blocked := enforced && decision.Action == event.DecisionBlock
+	blocked := enforced && (decision.Action == event.DecisionBlock || decision.Action == event.DecisionTerminateRun)
 	throttled := enforced && decision.Action == event.DecisionThrottle
 
 	// Track pending call for response matching

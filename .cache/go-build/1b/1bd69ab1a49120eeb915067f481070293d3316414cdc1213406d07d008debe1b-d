@@ -1,0 +1,5 @@
+./checklist.go
+./main.go
+./report.go
+./runner.go
+./scanner.go

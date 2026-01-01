@@ -1,0 +1,32 @@
+=== RUN   TestHASH001_KeyOrderEquivalence
+--- PASS: TestHASH001_KeyOrderEquivalence (0.00s)
+=== RUN   TestHASH001_NestedKeyOrderEquivalence
+--- PASS: TestHASH001_NestedKeyOrderEquivalence (0.00s)
+=== RUN   TestHASH001_ArrayOrderPreserved
+--- PASS: TestHASH001_ArrayOrderPreserved (0.00s)
+=== RUN   TestHASH002_GoldenValue
+--- PASS: TestHASH002_GoldenValue (0.00s)
+=== RUN   TestHASH002_Stability
+--- PASS: TestHASH002_Stability (0.00s)
+=== RUN   TestCanonical_UTF8Encoding
+--- PASS: TestCanonical_UTF8Encoding (0.00s)
+=== RUN   TestCanonical_NumberFormat
+    canonical_test.go:245: Integer 1 hash: 48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6
+    canonical_test.go:246: Float 1.0 hash: 48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6
+--- PASS: TestCanonical_NumberFormat (0.00s)
+=== RUN   TestCanonical_StringEscaping
+=== RUN   TestCanonical_StringEscaping/quotes
+=== RUN   TestCanonical_StringEscaping/newline
+=== RUN   TestCanonical_StringEscaping/tab
+=== RUN   TestCanonical_StringEscaping/backslash
+=== RUN   TestCanonical_StringEscaping/mixed
+--- PASS: TestCanonical_StringEscaping (0.00s)
+    --- PASS: TestCanonical_StringEscaping/quotes (0.00s)
+    --- PASS: TestCanonical_StringEscaping/newline (0.00s)
+    --- PASS: TestCanonical_StringEscaping/tab (0.00s)
+    --- PASS: TestCanonical_StringEscaping/backslash (0.00s)
+    --- PASS: TestCanonical_StringEscaping/mixed (0.00s)
+=== RUN   TestCanonical_NoWhitespace
+--- PASS: TestCanonical_NoWhitespace (0.00s)
+PASS
+ok  	github.com/subluminal/subluminal/pkg/canonical	0.007s
