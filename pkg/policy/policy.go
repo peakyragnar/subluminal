@@ -2,10 +2,12 @@ package policy
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/subluminal/subluminal/pkg/event"
 )
@@ -16,15 +18,17 @@ type Bundle struct {
 	Mode  event.RunMode
 	Info  event.PolicyInfo
 	Rules []Rule
+
+	budgets *budgetState
 }
 
 type Rule struct {
-	RuleID   string        `json:"rule_id"`
-	Kind     string        `json:"kind"`
-	Enabled  *bool         `json:"enabled"`
+	RuleID   string         `json:"rule_id"`
+	Kind     string         `json:"kind"`
+	Enabled  *bool          `json:"enabled"`
 	Severity event.Severity `json:"severity"`
-	Match    Match         `json:"match"`
-	Effect   Effect        `json:"effect"`
+	Match    Match          `json:"match"`
+	Effect   Effect         `json:"effect"`
 }
 
 type Match struct {
@@ -41,6 +45,7 @@ type Effect struct {
 	Action     event.DecisionAction `json:"action"`
 	ReasonCode string               `json:"reason_code"`
 	Message    string               `json:"message"`
+	Budget     *BudgetEffect        `json:"budget,omitempty"`
 }
 
 type Decision struct {
@@ -49,6 +54,33 @@ type Decision struct {
 	ReasonCode string
 	Summary    string
 	Severity   event.Severity
+}
+
+type BudgetEffect struct {
+	Scope            string               `json:"scope"`
+	LimitCalls       *int                 `json:"limit_calls,omitempty"`
+	LimitCostUnits   *int                 `json:"limit_cost_units,omitempty"`
+	CostUnitsPerCall *int                 `json:"cost_units_per_call,omitempty"`
+	OnExceed         event.DecisionAction `json:"on_exceed"`
+	HintText         string               `json:"hint_text,omitempty"`
+}
+
+type budgetState struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func newBudgetState() *budgetState {
+	return &budgetState{
+		calls: make(map[string]int),
+	}
+}
+
+func (bs *budgetState) incrementCalls(key string, delta int) int {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.calls[key] += delta
+	return bs.calls[key]
 }
 
 type rawBundle struct {
@@ -77,7 +109,8 @@ func LoadFromEnv() Bundle {
 			PolicyVersion: defaultString(parsed.PolicyVersion, "0.1.0"),
 			PolicyHash:    defaultString(parsed.PolicyHash, "none"),
 		},
-		Rules: parsed.Rules,
+		Rules:   parsed.Rules,
+		budgets: newBudgetState(),
 	}
 
 	if bundle.Mode == "" {
@@ -95,11 +128,13 @@ func DefaultBundle() Bundle {
 			PolicyVersion: "0.1.0",
 			PolicyHash:    "none",
 		},
+		budgets: newBudgetState(),
 	}
 }
 
 func (b Bundle) Decide(serverName, toolName string) Decision {
-	for _, rule := range b.Rules {
+	var decision *Decision
+	for idx, rule := range b.Rules {
 		if !ruleEnabled(rule.Enabled) {
 			continue
 		}
@@ -108,6 +143,14 @@ func (b Bundle) Decide(serverName, toolName string) Decision {
 			continue
 		}
 		if !matchName(rule.Match.ToolName, toolName) {
+			continue
+		}
+
+		if isBudgetRule(rule) {
+			budgetDecision := b.applyBudgetDecision(rule, idx, serverName, toolName)
+			if budgetDecision != nil && decision == nil {
+				decision = budgetDecision
+			}
 			continue
 		}
 
@@ -123,24 +166,14 @@ func (b Bundle) Decide(serverName, toolName string) Decision {
 		reason := defaultString(rule.Effect.ReasonCode, defaultReason(action))
 		summary := defaultString(rule.Effect.Message, defaultSummary(action))
 
-		if rule.RuleID == "" {
-			return Decision{
-				Action:     action,
-				RuleID:     nil,
-				ReasonCode: reason,
-				Summary:    summary,
-				Severity:   severity,
-			}
+		dec := decisionForRule(rule, action, reason, summary, severity)
+		if decision == nil {
+			decision = &dec
 		}
+	}
 
-		ruleID := rule.RuleID
-		return Decision{
-			Action:     action,
-			RuleID:     &ruleID,
-			ReasonCode: reason,
-			Summary:    summary,
-			Severity:   severity,
-		}
+	if decision != nil {
+		return *decision
 	}
 
 	return Decision{
@@ -149,6 +182,87 @@ func (b Bundle) Decide(serverName, toolName string) Decision {
 		ReasonCode: "DEFAULT_ALLOW",
 		Summary:    "Allowed by default policy",
 		Severity:   event.SeverityInfo,
+	}
+}
+
+func isBudgetRule(rule Rule) bool {
+	if rule.Effect.Budget != nil {
+		return true
+	}
+	return strings.EqualFold(rule.Kind, "budget")
+}
+
+func (b Bundle) applyBudgetDecision(rule Rule, ruleIndex int, serverName, toolName string) *Decision {
+	if rule.Effect.Budget == nil {
+		return nil
+	}
+
+	limit := rule.Effect.Budget.LimitCalls
+	if limit == nil {
+		return nil
+	}
+
+	bs := b.budgets
+	if bs == nil {
+		bs = newBudgetState()
+	}
+
+	scope := strings.TrimSpace(strings.ToLower(rule.Effect.Budget.Scope))
+	key := budgetKey(rule.RuleID, ruleIndex, scope, serverName, toolName)
+	count := bs.incrementCalls(key, 1)
+
+	if count <= *limit {
+		return nil
+	}
+
+	action := rule.Effect.Budget.OnExceed
+	if action == "" {
+		action = event.DecisionBlock
+	}
+	reason := defaultString(rule.Effect.ReasonCode, "BUDGET_EXCEEDED")
+	summary := defaultString(rule.Effect.Message, "Budget exceeded")
+	severity := normalizeSeverity(rule.Severity)
+
+	dec := decisionForRule(rule, action, reason, summary, severity)
+	return &dec
+}
+
+func budgetKey(ruleID string, ruleIndex int, scope, serverName, toolName string) string {
+	base := ruleID
+	if strings.TrimSpace(base) == "" {
+		base = fmt.Sprintf("budget:%d", ruleIndex)
+	}
+
+	switch scope {
+	case "", "run":
+		return fmt.Sprintf("%s|run", base)
+	case "tool":
+		return fmt.Sprintf("%s|tool:%s", base, toolName)
+	case "server_tool":
+		return fmt.Sprintf("%s|server_tool:%s:%s", base, serverName, toolName)
+	default:
+		return fmt.Sprintf("%s|run", base)
+	}
+}
+
+func decisionForRule(rule Rule, action event.DecisionAction, reason, summary string, severity event.Severity) Decision {
+	if rule.RuleID == "" {
+		return Decision{
+			Action:     action,
+			RuleID:     nil,
+			ReasonCode: reason,
+			Summary:    summary,
+			Severity:   severity,
+		}
+	}
+
+	ruleID := rule.RuleID
+	return Decision{
+		Action:     action,
+		RuleID:     &ruleID,
+		ReasonCode: reason,
+		Summary:    summary,
+		Severity:   severity,
 	}
 }
 
