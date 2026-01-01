@@ -25,16 +25,18 @@ func readFileWithPerm(path string) ([]byte, os.FileMode, error) {
 
 func writeBackupIfMissing(configPath string, data []byte, perm os.FileMode) (string, bool, error) {
 	path := backupPath(configPath)
-	if _, err := os.Stat(path); err == nil {
-		return path, false, nil
-	} else if !os.IsNotExist(err) {
-		return path, false, fmt.Errorf("stat backup: %w", err)
+	created := false
+	if _, err := os.Stat(path); err != nil {
+		if !os.IsNotExist(err) {
+			return path, false, fmt.Errorf("stat backup: %w", err)
+		}
+		created = true
 	}
 
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return path, false, fmt.Errorf("write backup: %w", err)
 	}
-	return path, true, nil
+	return path, created, nil
 }
 
 func restoreFromBackup(configPath string) (string, error) {

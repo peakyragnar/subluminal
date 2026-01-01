@@ -246,6 +246,58 @@ func TestIMP001_ImporterBackupRestoreCorrectness(t *testing.T) {
 			if !bytes.Equal(restored, original) {
 				t.Fatalf("IMP-001 FAILED: restored config does not match original")
 			}
+
+			editedConfig := map[string]any{
+				"mcpServers": map[string]any{
+					"alpha": map[string]any{
+						"command": "/usr/bin/alpha",
+						"args":    []string{"--flag", "value"},
+					},
+					"beta": map[string]any{
+						"command": "/usr/bin/beta",
+						"args":    []string{"--opt"},
+						"env": map[string]any{
+							"FOO": "baz",
+						},
+					},
+					"gamma": map[string]any{
+						"command": "/usr/bin/gamma",
+						"args":    []string{"--new"},
+					},
+				},
+				"other": map[string]any{
+					"feature": false,
+					"edition": "second",
+				},
+			}
+
+			edited := writeTestConfig(t, configPath, editedConfig)
+
+			result, err = importer.Import(importer.Options{
+				Client:     client,
+				ConfigPath: configPath,
+				ShimPath:   shimPath,
+			})
+			if err != nil {
+				t.Fatalf("IMP-001 FAILED: second import error: %v", err)
+			}
+
+			backupBytes = readFile(t, result.BackupPath)
+			if !bytes.Equal(backupBytes, edited) {
+				t.Fatalf("IMP-001 FAILED: backup not refreshed after second import")
+			}
+
+			if _, err := importer.Restore(importer.Options{
+				Client:     client,
+				ConfigPath: configPath,
+			}); err != nil {
+				t.Fatalf("IMP-001 FAILED: second restore error: %v", err)
+			}
+
+			restored = readFile(t, configPath)
+			if !bytes.Equal(restored, edited) {
+				t.Fatalf("IMP-001 FAILED: restored config does not match latest backup")
+			}
 		})
 	}
 }
