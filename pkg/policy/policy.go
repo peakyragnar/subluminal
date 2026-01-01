@@ -49,6 +49,7 @@ type Rule struct {
 type Match struct {
 	ServerName *NameMatch `json:"server_name,omitempty"`
 	ToolName   *NameMatch `json:"tool_name,omitempty"`
+	RiskClass  []string   `json:"risk_class,omitempty"`
 }
 
 type NameMatch struct {
@@ -64,6 +65,7 @@ type Effect struct {
 	Budget     *BudgetEffect        `json:"budget,omitempty"`
 	RateLimit  *RateLimitEffect     `json:"rate_limit,omitempty"`
 	Dedupe     *DedupeEffect        `json:"dedupe,omitempty"`
+	Tag        *TagEffect           `json:"tag,omitempty"`
 }
 
 type BreakerEffect struct {
@@ -103,6 +105,10 @@ type DedupeEffect struct {
 	Key         string               `json:"key"`
 	OnDuplicate event.DecisionAction `json:"on_duplicate"`
 	HintText    string               `json:"hint_text"`
+}
+
+type TagEffect struct {
+	AddRiskClass []string `json:"add_risk_class"`
 }
 
 type Decision struct {
@@ -248,6 +254,7 @@ func DefaultBundle() Bundle {
 func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 	b.ensureState()
 	now := time.Now()
+	riskClasses := make(map[string]struct{})
 
 	debugLog("Decide: server=%s, tool=%s, hash=%s", serverName, toolName, argsHash)
 
@@ -263,6 +270,9 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 			continue
 		}
 		if !matchName(rule.Match.ToolName, toolName) {
+			continue
+		}
+		if !matchRiskClass(rule.Match.RiskClass, riskClasses) {
 			continue
 		}
 
@@ -325,6 +335,12 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 				return dedupeDec
 			}
 			debugLog("    Dedupe OK")
+			continue
+		}
+
+		// Check tag rules (POL-007)
+		if kind == "tag" || rule.Effect.Tag != nil {
+			applyTag(rule.Effect.Tag, riskClasses)
 			continue
 		}
 
@@ -665,6 +681,44 @@ func matchName(match *NameMatch, value string) bool {
 	}
 
 	return false
+}
+
+func matchRiskClass(required []string, classes map[string]struct{}) bool {
+	if len(required) == 0 {
+		return true
+	}
+	if len(classes) == 0 {
+		return false
+	}
+
+	for _, value := range required {
+		normalized := normalizeRiskClass(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := classes[normalized]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func applyTag(effect *TagEffect, classes map[string]struct{}) {
+	if effect == nil {
+		return
+	}
+	for _, value := range effect.AddRiskClass {
+		normalized := normalizeRiskClass(value)
+		if normalized == "" {
+			continue
+		}
+		classes[normalized] = struct{}{}
+	}
+}
+
+func normalizeRiskClass(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func globMatch(pattern, value string) bool {

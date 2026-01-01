@@ -88,15 +88,46 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 func TestPOL002_AllowDenyOrdering(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Skip in v0.1: This test requires policy enforcement which is v0.2+
-	// v0.1 is observe mode only - all calls are allowed
-	t.Skip("POL-002: Requires policy enforcement (v0.2+)")
-
 	// Note: This test requires a policy with:
 	// 1. deny rule for specific tool (first)
 	// 2. allow rule for all tools (second)
 
-	h := newShimHarness()
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-002",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-first",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["denied_tool"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "DENY_FIRST",
+					"message": "Denied by policy"
+				}
+			},
+			{
+				"rule_id": "allow-all",
+				"kind": "allow",
+				"match": {
+					"tool_name": {"glob": ["*"]}
+				},
+				"effect": {
+					"action": "ALLOW",
+					"reason_code": "ALLOW_ALL",
+					"message": "Allowed by policy"
+				}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("denied_tool", "A tool denied by policy", nil)
 
 	if err := h.Start(); err != nil {
@@ -492,7 +523,42 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	// 1. tag rule: marks certain tools as "write_like"
 	// 2. deny rule: blocks all "write_like" tools
 
-	h := newShimHarness()
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-007",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "tag-write-like",
+				"kind": "tag",
+				"match": {
+					"tool_name": {"glob": ["file_write"]}
+				},
+				"effect": {
+					"tag": {
+						"add_risk_class": ["write_like"]
+					}
+				}
+			},
+			{
+				"rule_id": "deny-write-like",
+				"kind": "deny",
+				"match": {
+					"risk_class": ["write_like"]
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "WRITE_LIKE_BLOCK",
+					"message": "Write-like tools blocked"
+				}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("file_write", "Write to a file", nil)
 
 	if err := h.Start(); err != nil {
@@ -508,7 +574,7 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	// Assert: Call was blocked (tag rule applied, deny rule matched)
 	wrapped := testharness.WrapResponse(resp)
 	if wrapped.IsSuccess() {
-		t.Skip("POL-007: Tag rule feature not implemented (P1)")
+		t.Error("POL-007 FAILED: Tagged tool should have been blocked by risk_class rule")
 	}
 
 	// If blocked, verify it was due to risk_class matching
@@ -516,9 +582,10 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	if len(decisions) == 0 {
 		t.Fatal("POL-007 FAILED: No decisions captured")
 	}
-
-	// Look for evidence that risk_class was applied
-	// (This would be in the decision explain or rule match info)
+	ruleID := testharness.GetString(decisions[0], "decision.rule_id")
+	if ruleID != "deny-write-like" {
+		t.Errorf("POL-007 FAILED: decision.rule_id=%q, expected deny-write-like", ruleID)
+	}
 }
 
 // =============================================================================
