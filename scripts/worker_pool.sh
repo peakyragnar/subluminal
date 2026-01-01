@@ -44,7 +44,12 @@ pr_exists() {
   [[ "$count" -gt 0 ]]
 }
 
-mapfile -t READY_IDS < <(get_ready_ids)
+READY_IDS=()
+while IFS= read -r bead_id; do
+  if [[ -n "$bead_id" ]]; then
+    READY_IDS+=("$bead_id")
+  fi
+done < <(get_ready_ids)
 
 if [[ ${#READY_IDS[@]} -eq 0 ]]; then
   echo "[pool] No ready beads found"
@@ -54,7 +59,8 @@ fi
 echo "[pool] Found ${#READY_IDS[@]} ready bead(s)"
 echo ""
 
-declare -A JOBS
+JOBS_IDS=()
+JOBS_PIDS=()
 SPAWNED=0
 SKIPPED=0
 
@@ -99,18 +105,20 @@ spawn_worker() {
     exit $exit_code
   ) &
 
-  JOBS["$bead_id"]=$!
+  JOBS_IDS+=("$bead_id")
+  JOBS_PIDS+=("$!")
   ((SPAWNED++)) || true
   return 0
 }
 
 wait_for_slot() {
-  while [[ ${#JOBS[@]} -ge $WORKERS ]]; do
-    for bead_id in "${!JOBS[@]}"; do
-      pid="${JOBS[$bead_id]}"
+  while [[ ${#JOBS_IDS[@]} -ge $WORKERS ]]; do
+    for idx in "${!JOBS_IDS[@]}"; do
+      pid="${JOBS_PIDS[$idx]}"
       if ! kill -0 "$pid" 2>/dev/null; then
         wait "$pid" || true
-        unset "JOBS[$bead_id]"
+        unset "JOBS_IDS[$idx]"
+        unset "JOBS_PIDS[$idx]"
         return 0
       fi
     done
@@ -125,12 +133,14 @@ done
 
 echo ""
 echo "[pool] Waiting for all workers to complete..."
-for bead_id in "${!JOBS[@]}"; do
-  pid="${JOBS[$bead_id]}"
+for idx in "${!JOBS_IDS[@]}"; do
+  bead_id="${JOBS_IDS[$idx]}"
+  pid="${JOBS_PIDS[$idx]}"
   if wait "$pid"; then
     echo "[pool] $bead_id: SUCCESS"
   else
-    echo "[pool] $bead_id: FAILED (exit $?)"
+    exit_code=$?
+    echo "[pool] $bead_id: FAILED (exit $exit_code)"
   fi
 done
 
