@@ -1,0 +1,45 @@
+=== RUN   TestBudget_CallsAreCountedCorrectly
+    policy_test.go:58: Call 1: action=ALLOW
+    policy_test.go:58: Call 2: action=ALLOW
+    policy_test.go:58: Call 3: action=ALLOW
+    policy_test.go:66: Call 4: action=BLOCK, reason=BUDGET_EXCEEDED
+--- PASS: TestBudget_CallsAreCountedCorrectly (0.00s)
+=== RUN   TestBudget_StatePersistedAcrossCalls
+    policy_test.go:99: After call 1: budgets=map[budget-test|tool:tool1:1]
+    policy_test.go:111: After call 2: budgets=map[budget-test|tool:tool1:2]
+    policy_test.go:115: After call 3: budgets=map[budget-test|tool:tool1:3], action=BLOCK
+--- PASS: TestBudget_StatePersistedAcrossCalls (0.00s)
+=== RUN   TestBudget_LoadFromEnvPreservesState
+    policy_test.go:153: Loaded bundle: mode=guardrails, rules=1, budgets=true
+    policy_test.go:168: Decisions: d1=ALLOW, d2=ALLOW, d3=BLOCK
+--- PASS: TestBudget_LoadFromEnvPreservesState (0.00s)
+=== RUN   TestRateLimit_TokenBucketDepletes
+    policy_test.go:212: d1=ALLOW, d2=ALLOW
+    policy_test.go:223: d3=THROTTLE, backoff=500
+--- PASS: TestRateLimit_TokenBucketDepletes (0.00s)
+=== RUN   TestRateLimit_StatePersistedAcrossCalls
+--- PASS: TestRateLimit_StatePersistedAcrossCalls (0.00s)
+=== RUN   TestBreaker_TripsOnRepeatThreshold
+    policy_test.go:314: d1=ALLOW, d2=ALLOW
+    policy_test.go:330: d3=BLOCK, reason=BREAKER_TRIPPED
+--- PASS: TestBreaker_TripsOnRepeatThreshold (0.00s)
+=== RUN   TestBreaker_StatePersistedAcrossCalls
+    policy_test.go:371: After call 1: breakerState has 1 entries
+--- PASS: TestBreaker_StatePersistedAcrossCalls (0.00s)
+=== RUN   TestDedupe_BlocksDuplicateWithinWindow
+    policy_test.go:415: d1=ALLOW
+    policy_test.go:423: d2=BLOCK, reason=DEDUPE_DUPLICATE
+--- PASS: TestDedupe_BlocksDuplicateWithinWindow (0.00s)
+=== RUN   TestDedupe_DifferentArgsHashAllowed
+--- PASS: TestDedupe_DifferentArgsHashAllowed (0.00s)
+=== RUN   TestDedupe_StatePersistedAcrossCalls
+    policy_test.go:503: After call 1: dedupe has 1 entries
+--- PASS: TestDedupe_StatePersistedAcrossCalls (0.00s)
+=== RUN   TestJSONParsing_BudgetEffect
+    policy_test.go:563: Parsed budget: scope=tool, limit=5, on_exceed=BLOCK
+--- PASS: TestJSONParsing_BudgetEffect (0.00s)
+=== RUN   TestJSONParsing_RateLimitEffect
+    policy_test.go:606: Parsed rate_limit: capacity=10, refill=2/1000ms, backoff=500
+--- PASS: TestJSONParsing_RateLimitEffect (0.00s)
+PASS
+ok  	github.com/subluminal/subluminal/pkg/policy	0.008s

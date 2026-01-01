@@ -209,9 +209,10 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	enforced := p.policy.Mode != event.RunModeObserve
 	blocked := enforced && (decision.Action == event.DecisionBlock || decision.Action == event.DecisionTerminateRun)
 	throttled := enforced && decision.Action == event.DecisionThrottle
+	hinted := enforced && decision.Action == event.DecisionRejectWithHint
 
 	// Track pending call for response matching
-	if id, ok := GetRequestID(req); ok && !blocked && !throttled {
+	if id, ok := GetRequestID(req); ok && !blocked && !throttled && !hinted {
 		p.pendingMu.Lock()
 		p.pendingCalls[normalizeID(id)] = &pendingCall{
 			callID:   callID,
@@ -228,8 +229,8 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Emit tool_call_decision
 	p.emitToolCallDecision(callID, toolName, argsHash, decision)
 
-	if blocked || throttled {
-		if blocked {
+	if blocked || throttled || hinted {
+		if blocked || hinted {
 			p.state.IncrementBlocked()
 		} else {
 			p.state.IncrementThrottled()
@@ -239,6 +240,8 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		errCode := ErrCodePolicyBlocked
 		if throttled {
 			errCode = ErrCodePolicyThrottled
+		} else if hinted {
+			errCode = ErrCodeRejectWithHint
 		}
 		errDetail := &event.ErrorDetail{
 			Class:   "policy_block",
@@ -442,6 +445,16 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 
 	if decision.Action == event.DecisionThrottle && decision.BackoffMS > 0 {
 		subluminal["backoff_ms"] = decision.BackoffMS
+	}
+	if decision.Action == event.DecisionRejectWithHint {
+		hintText := decision.Explain.Summary
+		if hintText == "" {
+			hintText = "Rejected with hint"
+		}
+		subluminal["hint"] = map[string]any{
+			"hint_text": hintText,
+			"hint_kind": "OTHER",
+		}
 	}
 
 	return map[string]any{
