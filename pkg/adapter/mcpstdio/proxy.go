@@ -194,12 +194,13 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	callState := p.state.StartCall(callID)
 
 	policyDecision := p.policy.Decide(p.serverName, toolName, argsHash)
+	decisionSummary := redactSecrets(policyDecision.Summary)
 	decision := event.Decision{
 		Action:   policyDecision.Action,
 		RuleID:   policyDecision.RuleID,
 		Severity: policyDecision.Severity,
 		Explain: event.DecisionExplain{
-			Summary:    policyDecision.Summary,
+			Summary:    decisionSummary,
 			ReasonCode: policyDecision.ReasonCode,
 		},
 		BackoffMS: policyDecision.BackoffMS,
@@ -293,12 +294,22 @@ func (p *Proxy) readFromUpstream() {
 
 		// Parse response to match with request
 		var resp JSONRPCResponse
+		sanitizedLine := line
 		if err := json.Unmarshal(line, &resp); err == nil && resp.ID != nil {
-			p.matchResponse(&resp, line)
+			if resp.Error != nil {
+				resp.Error.Message = redactSecrets(resp.Error.Message)
+				if resp.Error.Data != nil {
+					resp.Error.Data = sanitizeValue(resp.Error.Data)
+				}
+				if sanitized, err := json.Marshal(resp); err == nil {
+					sanitizedLine = sanitized
+				}
+			}
+			p.matchResponse(&resp, sanitizedLine)
 		}
 
 		// Forward to agent
-		p.forwardToAgent(line)
+		p.forwardToAgent(sanitizedLine)
 	}
 }
 
