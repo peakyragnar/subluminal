@@ -25,16 +25,21 @@ const (
 // Emitter handles async event emission to a writer (typically stderr).
 type Emitter struct {
 	writer io.Writer
-	events chan []byte
+	events chan queuedEvent
 	done   chan struct{}
 	wg     sync.WaitGroup
+}
+
+type queuedEvent struct {
+	data []byte
+	done chan struct{}
 }
 
 // NewEmitter creates a new Emitter that writes to the given writer.
 func NewEmitter(w io.Writer) *Emitter {
 	return &Emitter{
 		writer: w,
-		events: make(chan []byte, DefaultBufferSize),
+		events: make(chan queuedEvent, DefaultBufferSize),
 		done:   make(chan struct{}),
 	}
 }
@@ -52,15 +57,21 @@ func (e *Emitter) writeLoop() {
 
 	for {
 		select {
-		case data := <-e.events:
+		case evt := <-e.events:
 			// Write to output (ignore errors - we're best-effort for events)
-			_, _ = e.writer.Write(data)
+			_, _ = e.writer.Write(evt.data)
+			if evt.done != nil {
+				close(evt.done)
+			}
 		case <-e.done:
 			// Drain remaining events before exiting
 			for {
 				select {
-				case data := <-e.events:
-					_, _ = e.writer.Write(data)
+				case evt := <-e.events:
+					_, _ = e.writer.Write(evt.data)
+					if evt.done != nil {
+						close(evt.done)
+					}
 				default:
 					return
 				}
@@ -80,10 +91,27 @@ func (e *Emitter) Emit(evt any) bool {
 	}
 
 	select {
-	case e.events <- data:
+	case e.events <- queuedEvent{data: data}:
 		return true
 	default:
 		// Queue full - drop the event
+		return false
+	}
+}
+
+// EmitSync serializes and queues an event, then waits until it is written.
+func (e *Emitter) EmitSync(evt any) bool {
+	data, err := event.SerializeEvent(evt)
+	if err != nil {
+		return false
+	}
+
+	done := make(chan struct{})
+	select {
+	case e.events <- queuedEvent{data: data, done: done}:
+		<-done
+		return true
+	case <-e.done:
 		return false
 	}
 }
@@ -92,7 +120,7 @@ func (e *Emitter) Emit(evt any) bool {
 // Useful for testing or when event is already serialized.
 func (e *Emitter) EmitRaw(data []byte) bool {
 	select {
-	case e.events <- data:
+	case e.events <- queuedEvent{data: data}:
 		return true
 	default:
 		return false
