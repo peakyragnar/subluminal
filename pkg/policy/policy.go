@@ -31,6 +31,7 @@ type Bundle struct {
 	Info  event.PolicyInfo
 	Rules []Rule
 
+	breakerMu    sync.Mutex
 	breakerState map[string][]time.Time
 	budgets      *budgetState
 	rateLimit    *rateLimitState
@@ -379,9 +380,11 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 }
 
 func (b *Bundle) ensureState() {
+	b.breakerMu.Lock()
 	if b.breakerState == nil {
 		b.breakerState = make(map[string][]time.Time)
 	}
+	b.breakerMu.Unlock()
 	if b.budgets == nil {
 		b.budgets = newBudgetState()
 	}
@@ -396,6 +399,12 @@ func (b *Bundle) ensureState() {
 func (b *Bundle) recordRepeat(key string, now time.Time, window time.Duration) int {
 	if window <= 0 {
 		return 0
+	}
+
+	b.breakerMu.Lock()
+	defer b.breakerMu.Unlock()
+	if b.breakerState == nil {
+		b.breakerState = make(map[string][]time.Time)
 	}
 
 	hits := b.breakerState[key]
