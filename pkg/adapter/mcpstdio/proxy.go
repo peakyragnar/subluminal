@@ -193,7 +193,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Start tracking
 	callState := p.state.StartCall(callID)
 
-	policyDecision := p.policy.Decide(p.serverName, toolName)
+	policyDecision := p.policy.Decide(p.serverName, toolName, argsHash)
 	decision := event.Decision{
 		Action:   policyDecision.Action,
 		RuleID:   policyDecision.RuleID,
@@ -205,7 +205,8 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		Policy: p.policy.Info,
 	}
 
-	blocked := p.policy.Mode != event.RunModeObserve && decision.Action == event.DecisionBlock
+	blocked := p.policy.Mode != event.RunModeObserve &&
+		(decision.Action == event.DecisionBlock || decision.Action == event.DecisionTerminateRun)
 
 	// Track pending call for response matching
 	if id, ok := GetRequestID(req); ok && !blocked {
