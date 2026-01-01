@@ -5,8 +5,17 @@
 package contract
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/subluminal/subluminal/pkg/importer"
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
 
@@ -169,14 +178,76 @@ func TestLED002_BackpressureDropsPreviewsNotDecisions(t *testing.T) {
 // =============================================================================
 
 func TestIMP001_ImporterBackupRestoreCorrectness(t *testing.T) {
-	t.Skip("IMP-001: Requires importer component (not yet implemented)")
+	clients := []importer.Client{importer.ClientClaude, importer.ClientCodex}
+	for _, client := range clients {
+		t.Run(string(client), func(t *testing.T) {
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "mcp.json")
 
-	// This test would:
-	// 1. Have existing Claude/Codex config
-	// 2. Run import
-	// 3. Run restore
-	// 4. Verify config identical to original (byte compare)
-	// 5. Verify import preserves server names
+			config := map[string]any{
+				"mcpServers": map[string]any{
+					"alpha": map[string]any{
+						"command": "/usr/bin/alpha",
+						"args":    []string{"--flag", "value"},
+					},
+					"beta": map[string]any{
+						"command": "/usr/bin/beta",
+						"args":    []string{"--opt"},
+						"env": map[string]any{
+							"FOO": "bar",
+						},
+					},
+				},
+				"other": map[string]any{
+					"feature": true,
+				},
+			}
+
+			original := writeTestConfig(t, configPath, config)
+
+			result, err := importer.Import(importer.Options{
+				Client:     client,
+				ConfigPath: configPath,
+				ShimPath:   shimPath,
+			})
+			if err != nil {
+				t.Fatalf("IMP-001 FAILED: import error: %v", err)
+			}
+
+			backupBytes := readFile(t, result.BackupPath)
+			if !bytes.Equal(backupBytes, original) {
+				t.Fatalf("IMP-001 FAILED: backup does not match original config")
+			}
+
+			servers := readMCPServers(t, configPath)
+			if _, ok := servers["alpha"]; !ok {
+				t.Fatalf("IMP-001 FAILED: server name alpha missing after import")
+			}
+			if _, ok := servers["beta"]; !ok {
+				t.Fatalf("IMP-001 FAILED: server name beta missing after import")
+			}
+
+			assertServerRewrite(t, servers["alpha"], "alpha", shimPath, "/usr/bin/alpha", []string{"--flag", "value"})
+			assertServerRewrite(t, servers["beta"], "beta", shimPath, "/usr/bin/beta", []string{"--opt"})
+
+			env, ok := servers["beta"]["env"].(map[string]any)
+			if !ok || env["FOO"] != "bar" {
+				t.Fatalf("IMP-001 FAILED: server env field not preserved")
+			}
+
+			if _, err := importer.Restore(importer.Options{
+				Client:     client,
+				ConfigPath: configPath,
+			}); err != nil {
+				t.Fatalf("IMP-001 FAILED: restore error: %v", err)
+			}
+
+			restored := readFile(t, configPath)
+			if !bytes.Equal(restored, original) {
+				t.Fatalf("IMP-001 FAILED: restored config does not match original")
+			}
+		})
+	}
 }
 
 // =============================================================================
@@ -186,12 +257,104 @@ func TestIMP001_ImporterBackupRestoreCorrectness(t *testing.T) {
 // =============================================================================
 
 func TestIMP002_TimeToFirstLogUnder5Minutes(t *testing.T) {
-	t.Skip("IMP-002: Requires fresh install simulation (not yet implemented)")
+	skipIfNoShim(t)
 
-	// This test would:
-	// 1. Start with fresh install fixture
-	// 2. Run import → agent → call tool
-	// 3. Verify first tool_call_start within 5 minutes
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "mcp.json")
+	fakeMCPPath := getFakeMCPPath()
+
+	config := map[string]any{
+		"mcpServers": map[string]any{
+			"test": map[string]any{
+				"command": fakeMCPPath,
+				"args":    []string{"--tools=test_tool"},
+			},
+		},
+	}
+
+	start := time.Now()
+	writeTestConfig(t, configPath, config)
+
+	if _, err := importer.Import(importer.Options{
+		Client:     importer.ClientClaude,
+		ConfigPath: configPath,
+		ShimPath:   shimPath,
+	}); err != nil {
+		t.Fatalf("IMP-002 FAILED: import error: %v", err)
+	}
+
+	servers := readMCPServers(t, configPath)
+	server, ok := servers["test"]
+	if !ok {
+		t.Fatalf("IMP-002 FAILED: server name test missing after import")
+	}
+
+	command := getStringField(t, server, "command")
+	args := getStringSlice(t, server["args"])
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Env = os.Environ()
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("IMP-002 FAILED: stdin pipe error: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("IMP-002 FAILED: stdout pipe error: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("IMP-002 FAILED: stderr pipe error: %v", err)
+	}
+
+	sink := testharness.NewEventSink()
+	go sink.Capture(stderr)
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("IMP-002 FAILED: start shim error: %v", err)
+	}
+
+	defer func() {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(os.Interrupt)
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Wait()
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		}
+	}()
+
+	driver := testharness.NewAgentDriver(stdin, stdout)
+	driver.StartResponseReader()
+
+	if _, err := driver.Initialize(); err != nil {
+		t.Fatalf("IMP-002 FAILED: initialize error: %v", err)
+	}
+
+	if _, err := driver.CallTool("test_tool", nil); err != nil {
+		t.Fatalf("IMP-002 FAILED: tool call error: %v", err)
+	}
+
+	if _, err := waitForEventType(sink, "tool_call_start", 30*time.Second); err != nil {
+		t.Fatalf("IMP-002 FAILED: %v", err)
+	}
+
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Minute {
+		t.Fatalf("IMP-002 FAILED: time-to-first-log %s exceeds 5 minutes", elapsed)
+	}
 }
 
 // =============================================================================
@@ -335,4 +498,132 @@ func TestADAPT003_AdapterFormatsErrorsCorrectly(t *testing.T) {
 			}
 		}
 	}
+}
+
+func writeTestConfig(t *testing.T, path string, config map[string]any) []byte {
+	t.Helper()
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatalf("Failed to marshal test config: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+	return data
+}
+
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Failed to read %s: %v", path, err)
+	}
+	return data
+}
+
+func readMCPServers(t *testing.T, path string) map[string]map[string]any {
+	t.Helper()
+	raw := readFile(t, path)
+
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatalf("Failed to parse config JSON: %v", err)
+	}
+
+	rawServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("Config missing mcpServers object")
+	}
+
+	servers := make(map[string]map[string]any)
+	for name, rawServer := range rawServers {
+		server, ok := rawServer.(map[string]any)
+		if !ok {
+			t.Fatalf("Server %s is not an object", name)
+		}
+		servers[name] = server
+	}
+	return servers
+}
+
+func getStringField(t *testing.T, server map[string]any, field string) string {
+	t.Helper()
+	value, ok := server[field].(string)
+	if !ok {
+		t.Fatalf("Server field %s missing or not a string", field)
+	}
+	return value
+}
+
+func getStringSlice(t *testing.T, raw any) []string {
+	t.Helper()
+
+	switch values := raw.(type) {
+	case []string:
+		return append([]string{}, values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for i, item := range values {
+			text, ok := item.(string)
+			if !ok {
+				t.Fatalf("Args[%d] is not a string", i)
+			}
+			out = append(out, text)
+		}
+		return out
+	default:
+		t.Fatalf("Args field not a string slice")
+		return nil
+	}
+}
+
+func assertServerRewrite(t *testing.T, server map[string]any, name, shimPath, upstream string, upstreamArgs []string) {
+	t.Helper()
+	command := getStringField(t, server, "command")
+	if command != shimPath {
+		t.Fatalf("Server %s command=%q, expected %q", name, command, shimPath)
+	}
+
+	args := getStringSlice(t, server["args"])
+	expected := append([]string{"--server-name=" + name, "--", upstream}, upstreamArgs...)
+	if !stringSlicesEqual(args, expected) {
+		t.Fatalf("Server %s args=%v, expected %v", name, args, expected)
+	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func waitForEventType(sink *testharness.EventSink, eventType string, timeout time.Duration) (*testharness.CapturedEvent, error) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	deadline := time.After(timeout)
+	for {
+		if evt := sink.FirstOfType(eventType); evt != nil {
+			return evt, nil
+		}
+		select {
+		case <-deadline:
+			return nil, fmt.Errorf("timeout waiting for %s event", eventType)
+		case <-ticker.C:
+		}
+	}
+}
+
+func getFakeMCPPath() string {
+	if p := os.Getenv("SUBLUMINAL_FAKEMCP_PATH"); p != "" {
+		return p
+	}
+	return filepath.Join(findRepoRoot(), "bin", "fakemcp")
 }
