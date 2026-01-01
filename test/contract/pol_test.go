@@ -152,14 +152,34 @@ func TestPOL002_AllowDenyOrdering(t *testing.T) {
 func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Skip in v0.1: This test requires policy enforcement which is v0.2+
-	// v0.1 is observe mode only - all calls are allowed
-	t.Skip("POL-003: Requires policy enforcement (v0.2+)")
-
 	// Note: This test requires a policy with:
 	// - budget rule: limit_calls=3
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-003",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "budgeted-tool-calls",
+				"kind": "budget",
+				"match": {"tool_name": {"glob": ["budgeted_tool"]}},
+				"effect": {
+					"reason_code": "BUDGET_EXCEEDED",
+					"message": "Budget exceeded",
+					"budget": {
+						"scope": "tool",
+						"limit_calls": 3,
+						"on_exceed": "BLOCK"
+					}
+				}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("budgeted_tool", "A tool with call budget", nil)
 
 	if err := h.Start(); err != nil {
