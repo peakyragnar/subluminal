@@ -22,6 +22,7 @@ type Bundle struct {
 
 	budgets   *budgetState
 	rateLimit *rateLimitState
+	dedupe    *dedupeCache
 }
 
 type Rule struct {
@@ -49,6 +50,7 @@ type Effect struct {
 	Message    string               `json:"message"`
 	Budget     *BudgetEffect        `json:"budget,omitempty"`
 	RateLimit  *RateLimitEffect     `json:"rate_limit,omitempty"`
+	Dedupe     *DedupeEffect        `json:"dedupe,omitempty"`
 }
 
 type RateLimitEffect struct {
@@ -69,6 +71,14 @@ type BudgetEffect struct {
 	CostUnitsPerCall *int                 `json:"cost_units_per_call,omitempty"`
 	OnExceed         event.DecisionAction `json:"on_exceed"`
 	HintText         string               `json:"hint_text,omitempty"`
+}
+
+type DedupeEffect struct {
+	Scope       string               `json:"scope"`
+	WindowMS    int                  `json:"window_ms"`
+	Key         string               `json:"key"`
+	OnDuplicate event.DecisionAction `json:"on_duplicate"`
+	HintText    string               `json:"hint_text"`
 }
 
 type Decision struct {
@@ -118,6 +128,30 @@ func (bs *budgetState) incrementCalls(key string, delta int) int {
 	return bs.calls[key]
 }
 
+type dedupeCache struct {
+	mu      sync.Mutex
+	entries map[string]time.Time
+}
+
+func newDedupeCache() *dedupeCache {
+	return &dedupeCache{
+		entries: make(map[string]time.Time),
+	}
+}
+
+func (d *dedupeCache) IsDuplicate(key string, window time.Duration, now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	lastSeen, ok := d.entries[key]
+	if ok && now.Sub(lastSeen) <= window {
+		d.entries[key] = now
+		return true
+	}
+	d.entries[key] = now
+	return false
+}
+
 type rawBundle struct {
 	Mode          string `json:"mode"`
 	PolicyID      string `json:"policy_id"`
@@ -147,6 +181,7 @@ func LoadFromEnv() Bundle {
 		Rules:     parsed.Rules,
 		budgets:   newBudgetState(),
 		rateLimit: newRateLimitState(),
+		dedupe:    newDedupeCache(),
 	}
 
 	if bundle.Mode == "" {
@@ -166,11 +201,13 @@ func DefaultBundle() Bundle {
 		},
 		budgets:   newBudgetState(),
 		rateLimit: newRateLimitState(),
+		dedupe:    newDedupeCache(),
 	}
 }
 
-func (b *Bundle) Decide(serverName, toolName string) Decision {
+func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 	b.ensureState()
+	now := time.Now()
 
 	var decision *Decision
 	for idx, rule := range b.Rules {
@@ -199,6 +236,15 @@ func (b *Bundle) Decide(serverName, toolName string) Decision {
 			rateLimitDec, limited := b.rateLimitDecision(idx, rule, serverName, toolName)
 			if limited {
 				return rateLimitDec
+			}
+			continue
+		}
+
+		// Check dedupe rules (POL-006)
+		if strings.EqualFold(rule.Kind, "dedupe") || rule.Effect.Dedupe != nil {
+			dedupeDec, blocked := b.evaluateDedupe(rule, serverName, toolName, argsHash, now)
+			if blocked {
+				return dedupeDec
 			}
 			continue
 		}
@@ -240,6 +286,9 @@ func (b *Bundle) ensureState() {
 	}
 	if b.rateLimit == nil {
 		b.rateLimit = newRateLimitState()
+	}
+	if b.dedupe == nil {
+		b.dedupe = newDedupeCache()
 	}
 }
 
@@ -332,6 +381,86 @@ func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolNam
 	ruleID := rule.RuleID
 	decision.RuleID = &ruleID
 	return decision, true
+}
+
+func (b *Bundle) evaluateDedupe(rule Rule, serverName, toolName, argsHash string, now time.Time) (Decision, bool) {
+	effect := rule.Effect.Dedupe
+	if effect == nil {
+		return Decision{}, false
+	}
+	if !dedupeKeySupported(effect.Key) {
+		return Decision{}, false
+	}
+	if effect.WindowMS <= 0 {
+		return Decision{}, false
+	}
+
+	dedupeKey := buildDedupeKey(effect.Scope, serverName, toolName, argsHash)
+	if dedupeKey == "" {
+		return Decision{}, false
+	}
+
+	cacheKey := rule.RuleID
+	if strings.TrimSpace(cacheKey) == "" {
+		cacheKey = "dedupe"
+	}
+	cacheKey = cacheKey + "|" + dedupeKey
+
+	window := time.Duration(effect.WindowMS) * time.Millisecond
+	if !b.dedupe.IsDuplicate(cacheKey, window, now) {
+		return Decision{}, false
+	}
+
+	// For v0.2, dedupe only supports BLOCK (per CI-Gating-Policy.md §5)
+	// REJECT_WITH_HINT support is v0.3 scope
+	action := event.DecisionBlock
+
+	severity := normalizeSeverity(rule.Severity)
+	reason := defaultString(rule.Effect.ReasonCode, "DEDUPE_DUPLICATE")
+	summary := defaultString(rule.Effect.Message, "Duplicate call blocked by dedupe window")
+
+	if rule.RuleID == "" {
+		return Decision{
+			Action:     action,
+			RuleID:     nil,
+			ReasonCode: reason,
+			Summary:    summary,
+			Severity:   severity,
+		}, true
+	}
+
+	ruleID := rule.RuleID
+	return Decision{
+		Action:     action,
+		RuleID:     &ruleID,
+		ReasonCode: reason,
+		Summary:    summary,
+		Severity:   severity,
+	}, true
+}
+
+func dedupeKeySupported(key string) bool {
+	if strings.TrimSpace(key) == "" {
+		return true
+	}
+	return strings.EqualFold(key, "args_hash")
+}
+
+func buildDedupeKey(scope, serverName, toolName, argsHash string) string {
+	if strings.TrimSpace(argsHash) == "" {
+		return ""
+	}
+
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "", "tool":
+		return toolName + "|" + argsHash
+	case "server_tool":
+		return serverName + "|" + toolName + "|" + argsHash
+	case "run":
+		return argsHash
+	default:
+		return ""
+	}
 }
 
 func decisionForRule(rule Rule, action event.DecisionAction, reason, summary string, severity event.Severity) Decision {

@@ -388,14 +388,35 @@ func TestPOL005_BreakerRepeatThresholdTriggers(t *testing.T) {
 func TestPOL006_DedupeWindowBlocksDuplicate(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Skip in v0.1: This test requires policy enforcement which is v0.2+
-	// v0.1 is observe mode only - all calls are allowed
-	t.Skip("POL-006: Requires policy enforcement (v0.2+)")
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-006",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "dedupe-write-tool",
+				"kind": "dedupe",
+				"match": {
+					"tool_name": {"glob": ["write_tool"]}
+				},
+				"effect": {
+					"reason_code": "DEDUPE_DUPLICATE",
+					"message": "Duplicate write-like call blocked",
+					"dedupe": {
+						"scope": "tool",
+						"window_ms": 60000,
+						"key": "args_hash",
+						"on_duplicate": "BLOCK"
+					}
+				}
+			}
+		]
+	}`
 
-	// Note: This test requires a policy with:
-	// - dedupe rule: window=60s, key=args_hash, on_duplicate=BLOCK
-
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("write_tool", "A write-like tool", nil)
 
 	if err := h.Start(); err != nil {
