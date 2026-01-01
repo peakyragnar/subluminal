@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/subluminal/subluminal/pkg/event"
 )
@@ -19,7 +20,8 @@ type Bundle struct {
 	Info  event.PolicyInfo
 	Rules []Rule
 
-	budgets *budgetState
+	budgets   *budgetState
+	rateLimit *rateLimitState
 }
 
 type Rule struct {
@@ -46,14 +48,18 @@ type Effect struct {
 	ReasonCode string               `json:"reason_code"`
 	Message    string               `json:"message"`
 	Budget     *BudgetEffect        `json:"budget,omitempty"`
+	RateLimit  *RateLimitEffect     `json:"rate_limit,omitempty"`
 }
 
-type Decision struct {
-	Action     event.DecisionAction
-	RuleID     *string
-	ReasonCode string
-	Summary    string
-	Severity   event.Severity
+type RateLimitEffect struct {
+	Scope             string               `json:"scope"`
+	Capacity          int                  `json:"capacity"`
+	RefillTokens      int                  `json:"refill_tokens"`
+	RefillPeriodMS    int                  `json:"refill_period_ms"`
+	CostTokensPerCall int                  `json:"cost_tokens_per_call"`
+	OnLimit           event.DecisionAction `json:"on_limit"`
+	BackoffMS         int                  `json:"backoff_ms"`
+	HintText          string               `json:"hint_text"`
 }
 
 type BudgetEffect struct {
@@ -63,6 +69,35 @@ type BudgetEffect struct {
 	CostUnitsPerCall *int                 `json:"cost_units_per_call,omitempty"`
 	OnExceed         event.DecisionAction `json:"on_exceed"`
 	HintText         string               `json:"hint_text,omitempty"`
+}
+
+type Decision struct {
+	Action     event.DecisionAction
+	RuleID     *string
+	ReasonCode string
+	Summary    string
+	Severity   event.Severity
+	BackoffMS  int
+}
+
+type rateLimitConfig struct {
+	Scope             string
+	Capacity          int
+	RefillTokens      int
+	RefillPeriod      time.Duration
+	CostTokensPerCall int
+	OnLimit           event.DecisionAction
+	BackoffMS         int
+}
+
+type rateLimitState struct {
+	mu      sync.Mutex
+	buckets map[string]*tokenBucket
+}
+
+type tokenBucket struct {
+	tokens     int
+	lastRefill time.Time
 }
 
 type budgetState struct {
@@ -109,8 +144,9 @@ func LoadFromEnv() Bundle {
 			PolicyVersion: defaultString(parsed.PolicyVersion, "0.1.0"),
 			PolicyHash:    defaultString(parsed.PolicyHash, "none"),
 		},
-		Rules:   parsed.Rules,
-		budgets: newBudgetState(),
+		Rules:     parsed.Rules,
+		budgets:   newBudgetState(),
+		rateLimit: newRateLimitState(),
 	}
 
 	if bundle.Mode == "" {
@@ -128,11 +164,14 @@ func DefaultBundle() Bundle {
 			PolicyVersion: "0.1.0",
 			PolicyHash:    "none",
 		},
-		budgets: newBudgetState(),
+		budgets:   newBudgetState(),
+		rateLimit: newRateLimitState(),
 	}
 }
 
-func (b Bundle) Decide(serverName, toolName string) Decision {
+func (b *Bundle) Decide(serverName, toolName string) Decision {
+	b.ensureState()
+
 	var decision *Decision
 	for idx, rule := range b.Rules {
 		if !ruleEnabled(rule.Enabled) {
@@ -146,10 +185,20 @@ func (b Bundle) Decide(serverName, toolName string) Decision {
 			continue
 		}
 
+		// Check budget rules (POL-003)
 		if isBudgetRule(rule) {
 			budgetDecision := b.applyBudgetDecision(rule, idx, serverName, toolName)
 			if budgetDecision != nil && decision == nil {
 				decision = budgetDecision
+			}
+			continue
+		}
+
+		// Check rate limit rules (POL-004)
+		if rule.Effect.RateLimit != nil {
+			rateLimitDec, limited := b.rateLimitDecision(idx, rule, serverName, toolName)
+			if limited {
+				return rateLimitDec
 			}
 			continue
 		}
@@ -185,6 +234,15 @@ func (b Bundle) Decide(serverName, toolName string) Decision {
 	}
 }
 
+func (b *Bundle) ensureState() {
+	if b.budgets == nil {
+		b.budgets = newBudgetState()
+	}
+	if b.rateLimit == nil {
+		b.rateLimit = newRateLimitState()
+	}
+}
+
 func isBudgetRule(rule Rule) bool {
 	if rule.Effect.Budget != nil {
 		return true
@@ -192,7 +250,7 @@ func isBudgetRule(rule Rule) bool {
 	return strings.EqualFold(rule.Kind, "budget")
 }
 
-func (b Bundle) applyBudgetDecision(rule Rule, ruleIndex int, serverName, toolName string) *Decision {
+func (b *Bundle) applyBudgetDecision(rule Rule, ruleIndex int, serverName, toolName string) *Decision {
 	if rule.Effect.Budget == nil {
 		return nil
 	}
@@ -243,6 +301,37 @@ func budgetKey(ruleID string, ruleIndex int, scope, serverName, toolName string)
 	default:
 		return fmt.Sprintf("%s|run", base)
 	}
+}
+
+func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolName string) (Decision, bool) {
+	config := normalizeRateLimit(rule.Effect.RateLimit)
+	if b.rateLimit.allow(ruleIndex, config, serverName, toolName) {
+		return Decision{}, false
+	}
+
+	action := config.OnLimit
+	severity := normalizeSeverity(rule.Severity)
+	reason := defaultString(rule.Effect.ReasonCode, defaultReason(action))
+	summary := defaultString(rule.Effect.Message, defaultSummary(action))
+
+	decision := Decision{
+		Action:     action,
+		RuleID:     nil,
+		ReasonCode: reason,
+		Summary:    summary,
+		Severity:   severity,
+	}
+	if action == event.DecisionThrottle {
+		decision.BackoffMS = config.BackoffMS
+	}
+
+	if rule.RuleID == "" {
+		return decision, true
+	}
+
+	ruleID := rule.RuleID
+	decision.RuleID = &ruleID
+	return decision, true
 }
 
 func decisionForRule(rule Rule, action event.DecisionAction, reason, summary string, severity event.Severity) Decision {
@@ -341,6 +430,12 @@ func defaultReason(action event.DecisionAction) string {
 		return "POLICY_BLOCK"
 	case event.DecisionAllow:
 		return "POLICY_ALLOW"
+	case event.DecisionThrottle:
+		return "POLICY_THROTTLED"
+	case event.DecisionRejectWithHint:
+		return "POLICY_HINT"
+	case event.DecisionTerminateRun:
+		return "POLICY_TERMINATED"
 	default:
 		return "POLICY_DECISION"
 	}
@@ -352,6 +447,12 @@ func defaultSummary(action event.DecisionAction) string {
 		return "Blocked by policy"
 	case event.DecisionAllow:
 		return "Allowed by policy"
+	case event.DecisionThrottle:
+		return "Throttled by policy"
+	case event.DecisionRejectWithHint:
+		return "Rejected with hint"
+	case event.DecisionTerminateRun:
+		return "Run terminated by policy"
 	default:
 		return "Policy decision"
 	}
@@ -373,4 +474,129 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func normalizeRateLimit(effect *RateLimitEffect) rateLimitConfig {
+	config := rateLimitConfig{
+		Scope:             strings.ToLower(strings.TrimSpace(effect.Scope)),
+		Capacity:          effect.Capacity,
+		RefillTokens:      effect.RefillTokens,
+		RefillPeriod:      time.Duration(effect.RefillPeriodMS) * time.Millisecond,
+		CostTokensPerCall: effect.CostTokensPerCall,
+		OnLimit:           normalizeOnLimitAction(effect.OnLimit),
+		BackoffMS:         effect.BackoffMS,
+	}
+
+	if config.Scope == "" {
+		config.Scope = "run"
+	}
+	if config.Capacity < 0 {
+		config.Capacity = 0
+	}
+	if config.RefillTokens < 0 {
+		config.RefillTokens = 0
+	}
+	if config.RefillPeriod < 0 {
+		config.RefillPeriod = 0
+	}
+	if config.CostTokensPerCall <= 0 {
+		config.CostTokensPerCall = 1
+	}
+	if config.OnLimit == "" {
+		config.OnLimit = event.DecisionThrottle
+	}
+	// Default backoff_ms when throttling - clients need to know how long to wait (Interface-Pack §2.5, ERR-002)
+	if config.OnLimit == event.DecisionThrottle && config.BackoffMS <= 0 {
+		config.BackoffMS = 1000
+	}
+
+	return config
+}
+
+func normalizeOnLimitAction(action event.DecisionAction) event.DecisionAction {
+	switch strings.ToUpper(string(action)) {
+	case string(event.DecisionThrottle):
+		return event.DecisionThrottle
+	case string(event.DecisionBlock):
+		return event.DecisionBlock
+	case string(event.DecisionRejectWithHint):
+		return event.DecisionRejectWithHint
+	default:
+		return ""
+	}
+}
+
+func newRateLimitState() *rateLimitState {
+	return &rateLimitState{
+		buckets: make(map[string]*tokenBucket),
+	}
+}
+
+func (state *rateLimitState) allow(ruleIndex int, config rateLimitConfig, serverName, toolName string) bool {
+	key := rateLimitKey(ruleIndex, config.Scope, serverName, toolName)
+	now := time.Now()
+
+	state.mu.Lock()
+	bucket := state.buckets[key]
+	if bucket == nil {
+		bucket = newTokenBucket(config.Capacity, now)
+		state.buckets[key] = bucket
+	}
+	allowed := bucket.allow(now, config)
+	state.mu.Unlock()
+
+	return allowed
+}
+
+func rateLimitKey(ruleIndex int, scope, serverName, toolName string) string {
+	switch strings.ToLower(scope) {
+	case "server_tool":
+		return fmt.Sprintf("rate_limit:%d:server_tool:%s:%s", ruleIndex, serverName, toolName)
+	case "tool":
+		return fmt.Sprintf("rate_limit:%d:tool:%s", ruleIndex, toolName)
+	default:
+		return fmt.Sprintf("rate_limit:%d:run", ruleIndex)
+	}
+}
+
+func newTokenBucket(capacity int, now time.Time) *tokenBucket {
+	if capacity < 0 {
+		capacity = 0
+	}
+	return &tokenBucket{
+		tokens:     capacity,
+		lastRefill: now,
+	}
+}
+
+func (bucket *tokenBucket) allow(now time.Time, config rateLimitConfig) bool {
+	bucket.refill(now, config)
+	if bucket.tokens < config.CostTokensPerCall {
+		return false
+	}
+	bucket.tokens -= config.CostTokensPerCall
+	return true
+}
+
+func (bucket *tokenBucket) refill(now time.Time, config rateLimitConfig) {
+	if config.RefillTokens <= 0 || config.RefillPeriod <= 0 {
+		return
+	}
+
+	elapsed := now.Sub(bucket.lastRefill)
+	if elapsed < config.RefillPeriod {
+		return
+	}
+
+	periods := int(elapsed / config.RefillPeriod)
+	if periods <= 0 {
+		return
+	}
+
+	tokens := bucket.tokens + (periods * config.RefillTokens)
+	if tokens > config.Capacity {
+		tokens = config.Capacity
+	}
+	bucket.tokens = tokens
+	bucket.lastRefill = bucket.lastRefill.Add(time.Duration(periods) * config.RefillPeriod)
 }
