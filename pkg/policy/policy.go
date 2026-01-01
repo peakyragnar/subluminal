@@ -16,6 +16,16 @@ import (
 
 const policyEnvJSON = "SUB_POLICY_JSON"
 
+// debugPolicy enables verbose logging for policy debugging.
+// Set SUB_POLICY_DEBUG=1 to enable.
+var debugPolicy = os.Getenv("SUB_POLICY_DEBUG") == "1"
+
+func debugLog(format string, args ...any) {
+	if debugPolicy {
+		fmt.Fprintf(os.Stderr, "[POLICY DEBUG] "+format+"\n", args...)
+	}
+}
+
 type Bundle struct {
 	Mode  event.RunMode
 	Info  event.PolicyInfo
@@ -177,11 +187,15 @@ type rawBundle struct {
 func LoadFromEnv() Bundle {
 	raw := strings.TrimSpace(os.Getenv(policyEnvJSON))
 	if raw == "" {
+		debugLog("LoadFromEnv: SUB_POLICY_JSON is empty, using default bundle")
 		return DefaultBundle()
 	}
 
+	debugLog("LoadFromEnv: parsing policy JSON (len=%d)", len(raw))
+
 	var parsed rawBundle
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		debugLog("LoadFromEnv: JSON parse error: %v", err)
 		return DefaultBundle()
 	}
 
@@ -201,6 +215,16 @@ func LoadFromEnv() Bundle {
 
 	if bundle.Mode == "" {
 		bundle.Mode = event.RunModeObserve
+	}
+
+	debugLog("LoadFromEnv: mode=%s, rules=%d, budgets=%v, rateLimit=%v, dedupe=%v",
+		bundle.Mode, len(bundle.Rules), bundle.budgets != nil, bundle.rateLimit != nil, bundle.dedupe != nil)
+
+	for i, rule := range bundle.Rules {
+		debugLog("  Rule[%d]: id=%s, kind=%s, budget=%v, rateLimit=%v, breaker=%v, dedupe=%v",
+			i, rule.RuleID, rule.Kind,
+			rule.Effect.Budget != nil, rule.Effect.RateLimit != nil,
+			rule.Effect.Breaker != nil, rule.Effect.Dedupe != nil)
 	}
 
 	return bundle
@@ -225,6 +249,8 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 	b.ensureState()
 	now := time.Now()
 
+	debugLog("Decide: server=%s, tool=%s, hash=%s", serverName, toolName, argsHash)
+
 	var orderedDecision *Decision
 	var breakerDecision *Decision
 
@@ -240,6 +266,8 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 			continue
 		}
 
+		debugLog("  Matched Rule[%d] id=%s kind=%s", idx, rule.RuleID, rule.Kind)
+
 		kind := strings.ToLower(strings.TrimSpace(rule.Kind))
 
 		// Check breaker rules (POL-005)
@@ -254,7 +282,10 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 
 			key := breakerKey(breakerRuleKey(rule, idx), breaker.Scope, serverName, toolName, argsHash)
 			count := b.recordRepeat(key, now, time.Duration(breaker.RepeatWindowMS)*time.Millisecond)
+			debugLog("    Breaker: key=%s, count=%d, threshold=%d", key, count, breaker.RepeatThreshold)
+
 			if count >= breaker.RepeatThreshold && breakerDecision == nil {
+				debugLog("    Breaker TRIPPED")
 				action := breakerAction(breaker.OnTrip)
 				breakerDecision = buildDecision(rule, action, "BREAKER_TRIPPED", "Breaker tripped")
 			}
@@ -264,8 +295,13 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 		// Check budget rules (POL-003)
 		if isBudgetRule(rule) {
 			budgetDec := b.applyBudgetDecision(rule, idx, serverName, toolName)
-			if budgetDec != nil && orderedDecision == nil {
-				orderedDecision = budgetDec
+			if budgetDec != nil {
+				debugLog("    Budget EXCEEDED: action=%s", budgetDec.Action)
+				if orderedDecision == nil {
+					orderedDecision = budgetDec
+				}
+			} else {
+				debugLog("    Budget OK")
 			}
 			continue
 		}
@@ -274,8 +310,10 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 		if rule.Effect.RateLimit != nil {
 			rateLimitDec, limited := b.rateLimitDecision(idx, rule, serverName, toolName)
 			if limited {
+				debugLog("    RateLimit LIMITED: action=%s, backoff=%d", rateLimitDec.Action, rateLimitDec.BackoffMS)
 				return rateLimitDec
 			}
+			debugLog("    RateLimit OK")
 			continue
 		}
 
@@ -283,8 +321,10 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 		if strings.EqualFold(rule.Kind, "dedupe") || rule.Effect.Dedupe != nil {
 			dedupeDec, blocked := b.evaluateDedupe(rule, serverName, toolName, argsHash, now)
 			if blocked {
+				debugLog("    Dedupe BLOCKED")
 				return dedupeDec
 			}
+			debugLog("    Dedupe OK")
 			continue
 		}
 
@@ -298,16 +338,21 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 		}
 
 		if orderedDecision == nil {
+			debugLog("    Rule Decision: %s", action)
 			orderedDecision = buildDecision(rule, action, defaultReason(action), defaultSummary(action))
 		}
 	}
 
 	if breakerDecision != nil {
+		debugLog("Decide: Returning Breaker Decision %s", breakerDecision.Action)
 		return *breakerDecision
 	}
 	if orderedDecision != nil {
+		debugLog("Decide: Returning Ordered Decision %s", orderedDecision.Action)
 		return *orderedDecision
 	}
+
+	debugLog("Decide: Default Allow")
 	return Decision{
 		Action:     event.DecisionAllow,
 		RuleID:     nil,
@@ -425,12 +470,17 @@ func (b *Bundle) applyBudgetDecision(rule Rule, ruleIndex int, serverName, toolN
 
 	bs := b.budgets
 	if bs == nil {
+		debugLog("    applyBudgetDecision: budgets state is NIL! recreating")
 		bs = newBudgetState()
+		// Fix: assign back to bundle to persist state
+		b.budgets = bs
 	}
 
 	scope := strings.TrimSpace(strings.ToLower(rule.Effect.Budget.Scope))
 	key := budgetKey(rule.RuleID, ruleIndex, scope, serverName, toolName)
 	count := bs.incrementCalls(key, 1)
+
+	debugLog("    applyBudgetDecision: key=%s, count=%d, limit=%d", key, count, *limit)
 
 	if count <= *limit {
 		return nil
@@ -465,6 +515,11 @@ func budgetKey(ruleID string, ruleIndex int, scope, serverName, toolName string)
 }
 
 func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolName string) (Decision, bool) {
+	if b.rateLimit == nil {
+		debugLog("    rateLimitDecision: rateLimit state is NIL! recreating")
+		b.rateLimit = newRateLimitState()
+	}
+
 	config := normalizeRateLimit(rule.Effect.RateLimit)
 	if b.rateLimit.allow(ruleIndex, config, serverName, toolName) {
 		return Decision{}, false
@@ -518,10 +573,17 @@ func (b *Bundle) evaluateDedupe(rule Rule, serverName, toolName, argsHash string
 	}
 	cacheKey = cacheKey + "|" + dedupeKey
 
+	if b.dedupe == nil {
+		debugLog("    evaluateDedupe: dedupe state is NIL! recreating")
+		b.dedupe = newDedupeCache()
+	}
+
 	window := time.Duration(effect.WindowMS) * time.Millisecond
 	if !b.dedupe.IsDuplicate(cacheKey, window, now) {
 		return Decision{}, false
 	}
+
+	debugLog("    evaluateDedupe: BLOCKED key=%s", cacheKey)
 
 	// For v0.2, dedupe only supports BLOCK (per CI-Gating-Policy.md §5)
 	// REJECT_WITH_HINT support is v0.3 scope
