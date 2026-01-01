@@ -20,6 +20,81 @@ LOG_DIR="$MAIN_REPO/.agent/logs"
 mkdir -p "$LOG_DIR"
 CI_LOG="$LOG_DIR/${BEAD_ID}.log"
 
+RULES_FILE="$MAIN_REPO/docs/agent-runtime-rules.md"
+AGENT_RULES="\
+- Make the minimal correct change for the bead
+- Do not modify unrelated files
+- Do not push branches or create PRs (the outer script handles that)
+- If tests fail, fix the code unless tests are clearly wrong
+- Focus on making ./scripts/ci.sh pass
+- Stop after 3 repeated failures on the same error and report"
+
+if [[ -f "$RULES_FILE" ]]; then
+  AGENT_RULES="$(cat "$RULES_FILE")"
+fi
+
+summarize_ci_log() {
+  local log_path="$1"
+  python3 - "$log_path" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+try:
+    lines = open(path, errors="ignore").read().splitlines()
+except FileNotFoundError:
+    lines = []
+
+patterns = [
+    r"^--- FAIL:",
+    r"^FAIL\b",
+    r"^panic:",
+    r"^panic ",
+    r"^\s*error:",
+    r"^\s*Error:",
+    r"\bFATAL\b",
+    r"\bERROR\b",
+    r"undefined:",
+    r"cannot find",
+    r"not found",
+    r"expected",
+    r"got",
+    r"build failed",
+    r"cannot ",
+    r"no such file",
+]
+
+hits = []
+for line in lines:
+    if any(re.search(p, line) for p in patterns):
+        hits.append(line)
+
+if not hits:
+    hits = lines[-40:]
+
+out = []
+seen = set()
+for line in hits:
+    if line not in seen:
+        out.append(line)
+        seen.add(line)
+    if len(out) >= 40:
+        break
+
+print("\n".join(out))
+PY
+}
+
+hash_text() {
+  python3 - <<'PY'
+import hashlib
+import sys
+
+data = sys.stdin.read().encode()
+print(hashlib.sha256(data).hexdigest())
+PY
+}
+
 get_bead_field() {
   local id="$1"
   local field="$2"
@@ -60,6 +135,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 FAIL_CONTEXT=""
+LAST_FAIL_SIG=""
+REPEAT_FAILS=0
 
 for ((i=1; i<=MAX_ITERS; i++)); do
   echo ""
@@ -74,11 +151,7 @@ Title: $TITLE
 Description: $DESCRIPTION
 
 ## Rules
-- Make the minimal correct change
-- Do NOT push branches or create PRs (the outer script handles that)
-- Do NOT modify unrelated files
-- If tests fail, fix the code (not the tests) unless tests are clearly wrong
-- Focus on making ./scripts/ci.sh pass
+$AGENT_RULES
 
 ## Current CI Status
 $FAIL_CONTEXT
@@ -104,10 +177,30 @@ Implement this task. When done, ensure ./scripts/ci.sh passes."
     break
   else
     echo "[bead_pr] CI FAILED (see $CI_LOG)"
-    FAIL_CONTEXT="Previous CI run failed. Last 100 lines of output:
+    FAIL_SUMMARY="$(summarize_ci_log "$CI_LOG")"
+    if [[ -z "$FAIL_SUMMARY" ]]; then
+      FAIL_SUMMARY="(no CI output captured)"
+    fi
+    FAIL_SIG="$(printf '%s' "$FAIL_SUMMARY" | hash_text)"
+
+    if [[ "$FAIL_SIG" == "$LAST_FAIL_SIG" ]]; then
+      ((REPEAT_FAILS++))
+    else
+      LAST_FAIL_SIG="$FAIL_SIG"
+      REPEAT_FAILS=1
+    fi
+
+    if [[ "$REPEAT_FAILS" -ge 3 ]]; then
+      echo "[bead_pr] ERROR: Same failure repeated $REPEAT_FAILS times; stopping"
+      echo "[bead_pr] Failure summary:"
+      echo "$FAIL_SUMMARY"
+      exit 4
+    fi
+
+    FAIL_CONTEXT="Previous CI run failed. Summary of failure:
 
 \`\`\`
-$(tail -n 100 "$CI_LOG")
+$FAIL_SUMMARY
 \`\`\`
 
 Fix the issues and try again."
