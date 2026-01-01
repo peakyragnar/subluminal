@@ -16,6 +16,11 @@ ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_REPO="$(cd "$SCRIPT_DIR/.." && git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT")"
 
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/subluminal"
+export GOCACHE="$CACHE_ROOT/go-build"
+export GOMODCACHE="$CACHE_ROOT/gomod"
+mkdir -p "$GOCACHE" "$GOMODCACHE"
+
 LOG_DIR="$MAIN_REPO/.agent/logs"
 mkdir -p "$LOG_DIR"
 CI_LOG="$LOG_DIR/${BEAD_ID}.log"
