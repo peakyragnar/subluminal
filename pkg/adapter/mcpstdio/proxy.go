@@ -193,7 +193,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Start tracking
 	callState := p.state.StartCall(callID)
 
-	policyDecision := p.policy.Decide(p.serverName, toolName)
+	policyDecision := p.policy.Decide(p.serverName, toolName, argsHash)
 	decision := event.Decision{
 		Action:   policyDecision.Action,
 		RuleID:   policyDecision.RuleID,
@@ -460,7 +460,7 @@ func (p *Proxy) emitToolCallDecision(callID, toolName, argsHash string, decision
 		},
 		Decision: decision,
 	}
-	p.emitter.Emit(evt)
+	p.emitter.EmitSync(evt)
 }
 
 func (p *Proxy) emitToolCallEnd(callID, toolName, argsHash string, status event.CallStatus, latencyMS, bytesOut int, errDetail *event.ErrorDetail) {
