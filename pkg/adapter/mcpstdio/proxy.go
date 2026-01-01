@@ -202,13 +202,16 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 			Summary:    policyDecision.Summary,
 			ReasonCode: policyDecision.ReasonCode,
 		},
-		Policy: p.policy.Info,
+		BackoffMS: policyDecision.BackoffMS,
+		Policy:    p.policy.Info,
 	}
 
-	blocked := p.policy.Mode != event.RunModeObserve && decision.Action == event.DecisionBlock
+	enforced := p.policy.Mode != event.RunModeObserve
+	blocked := enforced && decision.Action == event.DecisionBlock
+	throttled := enforced && decision.Action == event.DecisionThrottle
 
 	// Track pending call for response matching
-	if id, ok := GetRequestID(req); ok && !blocked {
+	if id, ok := GetRequestID(req); ok && !blocked && !throttled {
 		p.pendingMu.Lock()
 		p.pendingCalls[normalizeID(id)] = &pendingCall{
 			callID:   callID,
@@ -225,20 +228,28 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Emit tool_call_decision
 	p.emitToolCallDecision(callID, toolName, argsHash, decision)
 
-	if blocked {
-		p.state.IncrementBlocked()
+	if blocked || throttled {
+		if blocked {
+			p.state.IncrementBlocked()
+		} else {
+			p.state.IncrementThrottled()
+		}
 		p.state.IncrementErrors()
 		latencyMS := p.state.EndCall(callID)
+		errCode := ErrCodePolicyBlocked
+		if throttled {
+			errCode = ErrCodePolicyThrottled
+		}
 		errDetail := &event.ErrorDetail{
 			Class:   "policy_block",
 			Message: decision.Explain.Summary,
-			Code:    ErrCodePolicyBlocked,
+			Code:    errCode,
 		}
 
 		var payload []byte
 		if id, ok := GetRequestID(req); ok {
 			errData := p.policyErrorData(callID, toolName, argsHash, decision)
-			resp := NewErrorResponse(id, ErrCodePolicyBlocked, decision.Explain.Summary, errData)
+			resp := NewErrorResponse(id, errCode, decision.Explain.Summary, errData)
 			if p, err := json.Marshal(resp); err == nil {
 				payload = p
 			}
@@ -411,24 +422,30 @@ func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int
 }
 
 func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision event.Decision) map[string]any {
-	return map[string]any{
-		"subluminal": map[string]any{
-			"v":           core.InterfaceVersion,
-			"action":      decision.Action,
-			"rule_id":     decision.RuleID,
-			"reason_code": decision.Explain.ReasonCode,
-			"summary":     decision.Explain.Summary,
-			"run_id":      p.identity.RunID,
-			"call_id":     callID,
-			"server_name": p.serverName,
-			"tool_name":   toolName,
-			"args_hash":   argsHash,
-			"policy": map[string]any{
-				"policy_id":      decision.Policy.PolicyID,
-				"policy_version": decision.Policy.PolicyVersion,
-				"policy_hash":    decision.Policy.PolicyHash,
-			},
+	subluminal := map[string]any{
+		"v":           core.InterfaceVersion,
+		"action":      decision.Action,
+		"rule_id":     decision.RuleID,
+		"reason_code": decision.Explain.ReasonCode,
+		"summary":     decision.Explain.Summary,
+		"run_id":      p.identity.RunID,
+		"call_id":     callID,
+		"server_name": p.serverName,
+		"tool_name":   toolName,
+		"args_hash":   argsHash,
+		"policy": map[string]any{
+			"policy_id":      decision.Policy.PolicyID,
+			"policy_version": decision.Policy.PolicyVersion,
+			"policy_hash":    decision.Policy.PolicyHash,
 		},
+	}
+
+	if decision.Action == event.DecisionThrottle && decision.BackoffMS > 0 {
+		subluminal["backoff_ms"] = decision.BackoffMS
+	}
+
+	return map[string]any{
+		"subluminal": subluminal,
 	}
 }
 

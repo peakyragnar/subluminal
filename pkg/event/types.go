@@ -2,7 +2,8 @@
 //
 // PURPOSE IN SUBLUMINAL:
 // Every tool call an agent makes generates a sequence of events:
-//   run_start → tool_call_start → tool_call_decision → tool_call_end → run_end
+//
+//	run_start → tool_call_start → tool_call_decision → tool_call_end → run_end
 //
 // These events are:
 //   - Streamed to stdout (JSONL format) for real-time observability
@@ -180,11 +181,12 @@ type CallRef struct {
 // Decision contains the enforcement decision.
 // Per Interface-Pack §1.6
 type Decision struct {
-	Action   DecisionAction  `json:"action"`
-	RuleID   *string         `json:"rule_id"` // Nullable
-	Severity Severity        `json:"severity"`
-	Explain  DecisionExplain `json:"explain"`
-	Policy   PolicyInfo      `json:"policy"`
+	Action    DecisionAction  `json:"action"`
+	RuleID    *string         `json:"rule_id"` // Nullable
+	Severity  Severity        `json:"severity"`
+	Explain   DecisionExplain `json:"explain"`
+	BackoffMS int             `json:"backoff_ms,omitempty"`
+	Policy    PolicyInfo      `json:"policy"`
 }
 
 // ToolCallDecisionEvent represents an enforcement decision.
@@ -220,9 +222,9 @@ type ResultPreview struct {
 // ErrorDetail contains optional error information.
 // Per Interface-Pack §1.7
 type ErrorDetail struct {
-	Class     string `json:"class"`              // "upstream_error" | "policy_block" | "timeout" | "transport" | "unknown"
-	Message   string `json:"message"`            // Safe, no secrets
-	Code      any    `json:"code,omitempty"`     // Upstream code if known (string or int)
+	Class     string `json:"class"`          // "upstream_error" | "policy_block" | "timeout" | "transport" | "unknown"
+	Message   string `json:"message"`        // Safe, no secrets
+	Code      any    `json:"code,omitempty"` // Upstream code if known (string or int)
 	Retryable bool   `json:"retryable,omitempty"`
 }
 
