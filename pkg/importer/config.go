@@ -39,6 +39,11 @@ func rewriteConfig(raw []byte, shimPath string) ([]byte, []string, bool, error) 
 		}
 
 		if isShimWrapped(command, args, shimPath) {
+			if shouldUpdateShimPath(command, shimPath) {
+				server["command"] = shimPath
+				servers[name] = server
+				changed = true
+			}
 			serverNames = append(serverNames, name)
 			continue
 		}
@@ -107,7 +112,7 @@ func isShimWrapped(command string, args []string, shimPath string) bool {
 		return false
 	}
 
-	if command != shimPath && filepath.Base(command) != filepath.Base(shimPath) {
+	if filepath.Base(command) != filepath.Base(shimPath) {
 		return false
 	}
 
@@ -117,4 +122,14 @@ func isShimWrapped(command string, args []string, shimPath string) bool {
 		}
 	}
 	return false
+}
+
+func shouldUpdateShimPath(command string, shimPath string) bool {
+	if command == shimPath {
+		return false
+	}
+	if shimPath == filepath.Base(shimPath) {
+		return false
+	}
+	return true
 }
