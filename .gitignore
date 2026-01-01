@@ -27,3 +27,6 @@ go.work
 # Agent automation
 .worktrees/
 .agent/
+
+# Build cache
+.cache/

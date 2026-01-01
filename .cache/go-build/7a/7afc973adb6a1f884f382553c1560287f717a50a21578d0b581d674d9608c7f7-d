@@ -1,5 +1,0 @@
-./agent_driver.go
-./event_sink.go
-./fake_mcp_server.go
-./harness.go
-./harness_test.go

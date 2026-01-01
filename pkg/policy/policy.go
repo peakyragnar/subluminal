@@ -23,12 +23,12 @@ type Bundle struct {
 }
 
 type Rule struct {
-	RuleID   string        `json:"rule_id"`
-	Kind     string        `json:"kind"`
-	Enabled  *bool         `json:"enabled"`
+	RuleID   string         `json:"rule_id"`
+	Kind     string         `json:"kind"`
+	Enabled  *bool          `json:"enabled"`
 	Severity event.Severity `json:"severity"`
-	Match    Match         `json:"match"`
-	Effect   Effect        `json:"effect"`
+	Match    Match          `json:"match"`
+	Effect   Effect         `json:"effect"`
 }
 
 type Match struct {
@@ -109,7 +109,7 @@ func LoadFromEnv() Bundle {
 			PolicyVersion: defaultString(parsed.PolicyVersion, "0.1.0"),
 			PolicyHash:    defaultString(parsed.PolicyHash, "none"),
 		},
-		Rules: parsed.Rules,
+		Rules:   parsed.Rules,
 		budgets: newBudgetState(),
 	}
 
@@ -215,7 +215,10 @@ func (b Bundle) applyBudgetDecision(rule Rule, ruleIndex int, serverName, toolNa
 		return nil
 	}
 
-	action := event.DecisionBlock
+	action := rule.Effect.Budget.OnExceed
+	if action == "" {
+		action = event.DecisionBlock
+	}
 	reason := defaultString(rule.Effect.ReasonCode, "BUDGET_EXCEEDED")
 	summary := defaultString(rule.Effect.Message, "Budget exceeded")
 	severity := normalizeSeverity(rule.Severity)
