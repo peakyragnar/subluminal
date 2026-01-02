@@ -43,8 +43,8 @@ SEC-002	P0	secret_injection event contains metadata only (optional)	F,C	Enable s
 PROC-001	P0	SIGINT propagates; no zombie shim (Process supervision)	A,I	Start agent + shim + upstream	Send SIGINT to agent	Shim exits; upstream exits; no orphan processes after grace window
 PROC-002	P0	EOF on stdin terminates shim + upstream	A,I	Close agent stdin abruptly	Close pipe	Shim exits cleanly; upstream terminated
 PROC-003	P1	Upstream crash handled gracefully	A,I	Upstream segfault/exit mid-run	Call tool	Shim emits tool_call_end ERROR with transport/upstream class; run_end status FAILED/TERMINATED; no deadlock
-ID-001	P0	Identity env vars applied (§5)	E,A,C	SUB_RUN_ID, SUB_AGENT_ID, etc. set	One call	Events carry correct run_id,agent_id,env,client,principal as per env vars
-ID-002	P1	Workload context tolerance (A §1.3.1)	C	Omit workload fields	Run	Consumers (ledger/UI) do not crash; display “unknown” safely
+ID-001	P0	Identity env vars applied (§5)	E,A,C	SUB_RUN_ID, SUB_AGENT_ID, etc. set	One call	Events carry correct run_id,agent_id,env,client,principal/workload as per env vars when provided
+ID-002	P1	Workload context tolerance (A §1.3.1)	C	Omit principal/workload fields	Run	Consumers (ledger/UI) do not crash; display “unknown” safely
 LED-001	P0	Ledger ingestion durability	C	Ledgerd running, WAL enabled	Ingest 10k events	DB not corrupted; run/call counts correct; indexes used (query is fast)
 LED-002	P0	Backpressure drops previews not decisions	C,A	Force ingest overload (slow disk)	Burst events	Decision events persist; preview fields may be dropped/marked truncated; no shim blocking
 IMP-001	P0	Importer backup + restore correctness	D	Existing Claude/Codex config present	import then restore	After restore, config identical to original (byte compare); import preserves server names
@@ -66,4 +66,3 @@ How to use this checklist with parallel coding agents
 Two “gotcha” notes (so you don’t get bitten later)
 	•	Make canonicalization a shared library used by shim + policy + ledger to avoid subtle hash disagreements.
 	•	Make truncation behavior deterministic (exact [TRUNCATED] string or exact omission rules), otherwise UI/ledger goldens will drift.
-

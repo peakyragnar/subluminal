@@ -44,6 +44,8 @@ func TestID001_IdentityEnvVarsApplied(t *testing.T) {
 			"SUB_AGENT_ID=test-agent-id-67890",
 			"SUB_ENV=ci",
 			"SUB_CLIENT=claude",
+			"SUB_PRINCIPAL=test-user@example.com",
+			`SUB_WORKLOAD={"repo":"subluminal","labels":{"team":"core"}}`,
 		},
 	})
 	h.AddTool("test_tool", "A test tool", nil)
@@ -89,6 +91,25 @@ func TestID001_IdentityEnvVarsApplied(t *testing.T) {
 		if client != "claude" {
 			t.Errorf("ID-001 FAILED: Event client=%q, expected 'claude'\n"+
 				"  Per Interface-Pack §5, SUB_CLIENT should be applied", client)
+		}
+
+		// Check principal matches
+		principal := testharness.GetString(evt, "principal")
+		if principal != "test-user@example.com" {
+			t.Errorf("ID-001 FAILED: Event principal=%q, expected 'test-user@example.com'\n"+
+				"  Per Interface-Pack §5, SUB_PRINCIPAL should be applied", principal)
+		}
+
+		// Check workload matches
+		workloadRepo := testharness.GetString(evt, "workload.repo")
+		if workloadRepo != "subluminal" {
+			t.Errorf("ID-001 FAILED: Event workload.repo=%q, expected 'subluminal'\n"+
+				"  Per Interface-Pack §5, SUB_WORKLOAD should be applied", workloadRepo)
+		}
+		workloadTeam := testharness.GetString(evt, "workload.labels.team")
+		if workloadTeam != "core" {
+			t.Errorf("ID-001 FAILED: Event workload.labels.team=%q, expected 'core'\n"+
+				"  Per Interface-Pack §5, SUB_WORKLOAD should be applied", workloadTeam)
 		}
 	}
 }
