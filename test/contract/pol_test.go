@@ -244,6 +244,8 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 		t.Error("POL-003 FAILED: Call 4 should have been blocked (exceeded budget)")
 	}
 
+	waitForDecisionCount(t, h.EventSink, 4, time.Second)
+
 	// Assert: Decision cites budget rule
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) < 4 {
