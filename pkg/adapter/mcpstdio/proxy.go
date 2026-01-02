@@ -41,10 +41,11 @@ type Proxy struct {
 	state *core.RunState
 
 	// Identity
-	identity   core.Identity
-	source     core.Source
-	serverName string
-	policy     policy.Bundle
+	identity     core.Identity
+	source       core.Source
+	serverName   string
+	policy       policy.Bundle
+	policyTarget policy.SelectorTarget
 
 	// I/O
 	agentIn  io.Reader
@@ -78,6 +79,11 @@ func NewProxy(
 	agentOut io.Writer,
 ) *Proxy {
 	policyBundle := policy.LoadFromEnv()
+	policyTarget := policy.SelectorTarget{
+		Env:     string(identity.Env),
+		AgentID: identity.AgentID,
+		Client:  string(identity.Client),
+	}
 	return &Proxy{
 		upstream:     upstream,
 		emitter:      emitter,
@@ -86,6 +92,7 @@ func NewProxy(
 		source:       source,
 		serverName:   serverName,
 		policy:       policyBundle,
+		policyTarget: policyTarget,
 		agentIn:      agentIn,
 		agentOut:     agentOut,
 		pendingCalls: make(map[any]*pendingCall),
@@ -195,7 +202,13 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Start tracking
 	callState := p.state.StartCall(callID)
 
-	policyDecision := p.policy.Decide(p.serverName, toolName, argsHash)
+	policyDecision := p.policy.DecideWithContext(policy.DecisionContext{
+		ServerName: p.serverName,
+		ToolName:   toolName,
+		ArgsHash:   argsHash,
+		Args:       args,
+		Target:     p.policyTarget,
+	})
 	decisionSummary := redactSecrets(policyDecision.Summary)
 	decision := event.Decision{
 		Action:   policyDecision.Action,

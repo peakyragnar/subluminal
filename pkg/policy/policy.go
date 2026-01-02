@@ -27,9 +27,11 @@ func debugLog(format string, args ...any) {
 }
 
 type Bundle struct {
-	Mode  event.RunMode
-	Info  event.PolicyInfo
-	Rules []Rule
+	Mode      event.RunMode
+	Info      event.PolicyInfo
+	Defaults  PolicyDefaults
+	Selectors PolicySelectors
+	Rules     []Rule
 
 	breakerMu    sync.Mutex
 	breakerState map[string][]time.Time
@@ -51,6 +53,7 @@ type Match struct {
 	ServerName *NameMatch `json:"server_name,omitempty"`
 	ToolName   *NameMatch `json:"tool_name,omitempty"`
 	RiskClass  []string   `json:"risk_class,omitempty"`
+	Args       *ArgsMatch `json:"args,omitempty"`
 }
 
 type NameMatch struct {
@@ -110,6 +113,15 @@ type DedupeEffect struct {
 
 type TagEffect struct {
 	AddRiskClass []string `json:"add_risk_class"`
+}
+
+// DecisionContext provides inputs for policy evaluation.
+type DecisionContext struct {
+	ServerName string
+	ToolName   string
+	ArgsHash   string
+	Args       map[string]any
+	Target     SelectorTarget
 }
 
 type Decision struct {
@@ -185,11 +197,14 @@ func (d *dedupeCache) IsDuplicate(key string, window time.Duration, now time.Tim
 }
 
 type rawBundle struct {
-	Mode          string `json:"mode"`
-	PolicyID      string `json:"policy_id"`
-	PolicyVersion string `json:"policy_version"`
-	PolicyHash    string `json:"policy_hash"`
-	Rules         []Rule `json:"rules"`
+	Mode          string          `json:"mode"`
+	PolicyID      string          `json:"policy_id"`
+	PolicyVersion string          `json:"policy_version"`
+	Version       string          `json:"version"`
+	PolicyHash    string          `json:"policy_hash"`
+	Defaults      PolicyDefaults  `json:"defaults"`
+	Selectors     PolicySelectors `json:"selectors"`
+	Rules         []Rule          `json:"rules"`
 }
 
 func LoadFromEnv() Bundle {
@@ -207,13 +222,28 @@ func LoadFromEnv() Bundle {
 		return DefaultBundle()
 	}
 
+	version := defaultString(parsed.PolicyVersion, parsed.Version)
+	version = defaultString(version, "0.1.0")
+	policyID := defaultString(parsed.PolicyID, "default")
+	policyHash := strings.TrimSpace(parsed.PolicyHash)
+	if policyHash == "" {
+		snapshot := buildSnapshot(policyID, version, normalizeModeString(parsed.Mode), parsed.Defaults, parsed.Selectors, parsed.Rules)
+		if hash, _, err := hashSnapshot(snapshot); err == nil {
+			policyHash = hash
+		} else {
+			policyHash = "none"
+		}
+	}
+
 	bundle := Bundle{
 		Mode: parseMode(parsed.Mode),
 		Info: event.PolicyInfo{
-			PolicyID:      defaultString(parsed.PolicyID, "default"),
-			PolicyVersion: defaultString(parsed.PolicyVersion, "0.1.0"),
-			PolicyHash:    defaultString(parsed.PolicyHash, "none"),
+			PolicyID:      policyID,
+			PolicyVersion: version,
+			PolicyHash:    defaultString(policyHash, "none"),
 		},
+		Defaults:     parsed.Defaults,
+		Selectors:    parsed.Selectors,
 		Rules:        parsed.Rules,
 		breakerState: make(map[string][]time.Time),
 		budgets:      newBudgetState(),
@@ -254,11 +284,29 @@ func DefaultBundle() Bundle {
 }
 
 func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
+	return b.DecideWithContext(DecisionContext{
+		ServerName: serverName,
+		ToolName:   toolName,
+		ArgsHash:   argsHash,
+	})
+}
+
+func (b *Bundle) DecideWithContext(ctx DecisionContext) Decision {
 	b.ensureState()
 	now := time.Now()
 	riskClasses := make(map[string]struct{})
 
-	debugLog("Decide: server=%s, tool=%s, hash=%s", serverName, toolName, argsHash)
+	debugLog("Decide: server=%s, tool=%s, hash=%s", ctx.ServerName, ctx.ToolName, ctx.ArgsHash)
+
+	if !selectorsMatch(b.Selectors, ctx.Target) {
+		return Decision{
+			Action:     event.DecisionAllow,
+			RuleID:     nil,
+			ReasonCode: "POLICY_NOT_APPLICABLE",
+			Summary:    "Policy selectors did not match",
+			Severity:   event.SeverityInfo,
+		}
+	}
 
 	var orderedDecision *Decision
 	var breakerDecision *Decision
@@ -268,13 +316,16 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 			continue
 		}
 
-		if !matchName(rule.Match.ServerName, serverName) {
+		if !matchName(rule.Match.ServerName, ctx.ServerName) {
 			continue
 		}
-		if !matchName(rule.Match.ToolName, toolName) {
+		if !matchName(rule.Match.ToolName, ctx.ToolName) {
 			continue
 		}
 		if !matchRiskClass(rule.Match.RiskClass, riskClasses) {
+			continue
+		}
+		if !matchArgs(rule.Match.Args, ctx.Args) {
 			continue
 		}
 
@@ -292,7 +343,7 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 				continue
 			}
 
-			key := breakerKey(breakerRuleKey(rule, idx), breaker.Scope, serverName, toolName, argsHash)
+			key := breakerKey(breakerRuleKey(rule, idx), breaker.Scope, ctx.ServerName, ctx.ToolName, ctx.ArgsHash)
 			count := b.recordRepeat(key, now, time.Duration(breaker.RepeatWindowMS)*time.Millisecond)
 			debugLog("    Breaker: key=%s, count=%d, threshold=%d", key, count, breaker.RepeatThreshold)
 
@@ -307,7 +358,7 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 
 		// Check budget rules (POL-003)
 		if isBudgetRule(rule) {
-			budgetDec := b.applyBudgetDecision(rule, idx, serverName, toolName)
+			budgetDec := b.applyBudgetDecision(rule, idx, ctx.ServerName, ctx.ToolName)
 			if budgetDec != nil {
 				debugLog("    Budget EXCEEDED: action=%s", budgetDec.Action)
 				if orderedDecision == nil {
@@ -321,7 +372,7 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 
 		// Check rate limit rules (POL-004)
 		if rule.Effect.RateLimit != nil {
-			rateLimitDec, limited := b.rateLimitDecision(idx, rule, serverName, toolName)
+			rateLimitDec, limited := b.rateLimitDecision(idx, rule, ctx.ServerName, ctx.ToolName)
 			if limited {
 				debugLog("    RateLimit LIMITED: action=%s, backoff=%d", rateLimitDec.Action, rateLimitDec.BackoffMS)
 				return rateLimitDec
@@ -332,7 +383,7 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 
 		// Check dedupe rules (POL-006)
 		if strings.EqualFold(rule.Kind, "dedupe") || rule.Effect.Dedupe != nil {
-			dedupeDec, blocked := b.evaluateDedupe(rule, serverName, toolName, argsHash, now)
+			dedupeDec, blocked := b.evaluateDedupe(rule, ctx.ServerName, ctx.ToolName, ctx.ArgsHash, now)
 			if blocked {
 				debugLog("    Dedupe BLOCKED")
 				return dedupeDec
