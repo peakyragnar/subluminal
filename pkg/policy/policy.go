@@ -610,9 +610,10 @@ func (b *Bundle) evaluateDedupe(rule Rule, serverName, toolName, argsHash string
 
 	debugLog("    evaluateDedupe: BLOCKED key=%s", cacheKey)
 
-	// For v0.2, dedupe only supports BLOCK (per CI-Gating-Policy.md §5)
-	// REJECT_WITH_HINT support is v0.3 scope
-	action := event.DecisionBlock
+	action := normalizeOnDuplicateAction(effect.OnDuplicate)
+	if action == "" {
+		action = event.DecisionBlock
+	}
 
 	severity := normalizeSeverity(rule.Severity)
 	reason := defaultString(rule.Effect.ReasonCode, "DEDUPE_DUPLICATE")
@@ -862,6 +863,17 @@ func normalizeOnLimitAction(action event.DecisionAction) event.DecisionAction {
 	switch strings.ToUpper(string(action)) {
 	case string(event.DecisionThrottle):
 		return event.DecisionThrottle
+	case string(event.DecisionBlock):
+		return event.DecisionBlock
+	case string(event.DecisionRejectWithHint):
+		return event.DecisionRejectWithHint
+	default:
+		return ""
+	}
+}
+
+func normalizeOnDuplicateAction(action event.DecisionAction) event.DecisionAction {
+	switch strings.ToUpper(string(action)) {
 	case string(event.DecisionBlock):
 		return event.DecisionBlock
 	case string(event.DecisionRejectWithHint):
