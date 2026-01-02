@@ -244,6 +244,11 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 		t.Error("POL-003 FAILED: Call 4 should have been blocked (exceeded budget)")
 	}
 
+	// Ensure all events are captured before inspecting decisions.
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Failed to stop harness: %v", err)
+	}
+
 	// Assert: Decision cites budget rule
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) < 4 {
