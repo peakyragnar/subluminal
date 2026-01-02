@@ -27,6 +27,8 @@ import (
 	"github.com/subluminal/subluminal/pkg/policy"
 )
 
+const defaultThrottleBackoffMS = 1000
+
 // Proxy handles bidirectional JSON-RPC proxying with event emission.
 type Proxy struct {
 	// Upstream process
@@ -205,6 +207,9 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		},
 		BackoffMS: policyDecision.BackoffMS,
 		Policy:    p.policy.Info,
+	}
+	if decision.Action == event.DecisionThrottle && decision.BackoffMS <= 0 {
+		decision.BackoffMS = defaultThrottleBackoffMS
 	}
 
 	enforced := p.policy.Mode != event.RunModeObserve
