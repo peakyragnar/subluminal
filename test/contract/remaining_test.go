@@ -194,6 +194,9 @@ func TestLED001_LedgerIngestionDurability(t *testing.T) {
 	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM policy_versions;"); actual != expectedPolicies {
 		t.Fatalf("LED-001 FAILED: policy version count=%s, expected %s", actual, expectedPolicies)
 	}
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM policy_versions WHERE mode IS NULL OR mode = '';"); actual != "0" {
+		t.Fatalf("LED-001 FAILED: policy version mode count=%s, expected 0", actual)
+	}
 
 	plan := sqliteQuery(t, dbPath, "EXPLAIN QUERY PLAN SELECT * FROM tool_calls WHERE run_id='run-1' ORDER BY created_at LIMIT 5;")
 	if !strings.Contains(plan, "idx_tool_calls_run_created") {

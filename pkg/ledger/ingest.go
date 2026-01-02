@@ -338,6 +338,10 @@ func writePolicyVersion(w *bufio.Writer, policy event.PolicyInfo, mode string, c
 	if policyID == "" || version == "" {
 		return nil
 	}
+	modeValue := "NULL"
+	if strings.TrimSpace(mode) != "" {
+		modeValue = sqlText(mode)
+	}
 	stmt := fmt.Sprintf(
 		"INSERT INTO policy_versions (policy_id, version, mode, rules_hash, rules_json, created_at) VALUES (%s, %s, %s, %s, %s, %s) "+
 			"ON CONFLICT(policy_id, version) DO UPDATE SET "+
@@ -347,7 +351,7 @@ func writePolicyVersion(w *bufio.Writer, policy event.PolicyInfo, mode string, c
 			"created_at=COALESCE(policy_versions.created_at, excluded.created_at);",
 		sqlText(policyID),
 		sqlText(version),
-		sqlText(mode),
+		modeValue,
 		sqlText(policy.PolicyHash),
 		sqlText(""),
 		sqlText(createdAt),
