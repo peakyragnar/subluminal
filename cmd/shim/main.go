@@ -33,6 +33,7 @@ import (
 
 	"github.com/subluminal/subluminal/pkg/adapter/mcpstdio"
 	"github.com/subluminal/subluminal/pkg/core"
+	"github.com/subluminal/subluminal/pkg/secret"
 )
 
 func main() {
@@ -64,8 +65,43 @@ func main() {
 	emitter.Start()
 	defer emitter.Close()
 
+	secretBindings, err := secret.LoadBindingsFromEnv(*serverName)
+	if err != nil && os.Getenv("SUB_SECRET_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "Secret bindings error: %v\n", err)
+	}
+
+	store := secret.Store{}
+	if storePath, err := secret.ResolveStorePath(); err == nil {
+		if loaded, err := secret.LoadStore(storePath); err == nil {
+			store = loaded
+		} else if os.Getenv("SUB_SECRET_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "Secret store error: %v\n", err)
+		}
+	} else if os.Getenv("SUB_SECRET_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "Secret store path error: %v\n", err)
+	}
+
+	injections := secret.ResolveBindings(secretBindings, store, secret.EnvMap(os.Environ()))
+	secretEvents := make([]secret.InjectionEvent, 0, len(injections))
+	redactValues := make([]string, 0, len(injections))
+	injectEnv := make([]string, 0, len(injections))
+	for _, injection := range injections {
+		secretEvents = append(secretEvents, injection.Event())
+		if injection.Success {
+			injectEnv = append(injectEnv, injection.InjectAs+"="+injection.Value)
+			if injection.Redact {
+				redactValues = append(redactValues, injection.Value)
+			}
+		}
+	}
+
+	redactor := mcpstdio.NewRedactor(redactValues)
+
 	// Start upstream process
 	upstream := mcpstdio.NewUpstreamProcess(upstreamArgs[0], upstreamArgs[1:])
+	if len(injectEnv) > 0 {
+		upstream.SetEnv(injectEnv)
+	}
 	if err := upstream.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting upstream: %v\n", err)
 		os.Exit(1)
@@ -84,6 +120,8 @@ func main() {
 		source,
 		os.Stdin,
 		os.Stdout,
+		redactor,
+		secretEvents,
 	)
 
 	// Handle signals in background

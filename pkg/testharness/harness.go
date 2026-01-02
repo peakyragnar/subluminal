@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -79,16 +80,19 @@ type HarnessConfig struct {
 	// MeasureSize makes fakemcp return {"bytes_received": N} for each tool call,
 	// where N is the JSON byte size of the args. Used by BUF-003 test.
 	MeasureSize bool
+
+	// RequireEnv makes fakemcp require these env vars for tool calls.
+	RequireEnv []string
 }
 
 // directPipes connects driver directly to fake server (no shim).
 type directPipes struct {
 	// driver writes here, fake server reads
-	driverToServer *io.PipeWriter
+	driverToServer   *io.PipeWriter
 	serverFromDriver *io.PipeReader
 
 	// fake server writes here, driver reads
-	serverToDriver *io.PipeWriter
+	serverToDriver   *io.PipeWriter
 	driverFromServer *io.PipeReader
 }
 
@@ -180,6 +184,9 @@ func (h *TestHarness) startWithShim() error {
 	}
 	if h.config.MeasureSize {
 		args = append(args, "--measure-size")
+	}
+	if len(h.config.RequireEnv) > 0 {
+		args = append(args, "--require-env="+strings.Join(h.config.RequireEnv, ","))
 	}
 
 	// Start shim process

@@ -66,6 +66,7 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 			"  Error: %s", wrapped.ErrorMessage())
 	}
 
+	waitForEventCount(t, h.EventSink, "tool_call_decision", 1)
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) == 0 {
 		t.Fatal("POL-001 FAILED: No tool_call_decision events")
@@ -244,6 +245,7 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 		t.Error("POL-003 FAILED: Call 4 should have been blocked (exceeded budget)")
 	}
 
+	waitForEventCount(t, h.EventSink, "tool_call_decision", 4)
 	// Assert: Decision cites budget rule
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) < 4 {
@@ -255,6 +257,17 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 	allowedActions := map[string]bool{"BLOCK": true, "REJECT_WITH_HINT": true, "TERMINATE_RUN": true}
 	if !allowedActions[action] {
 		t.Errorf("POL-003 FAILED: 4th call decision was %q, expected BLOCK/REJECT_WITH_HINT/TERMINATE_RUN", action)
+	}
+}
+
+func waitForEventCount(t *testing.T, sink *testharness.EventSink, eventType string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(sink.ByType(eventType)) >= count {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
