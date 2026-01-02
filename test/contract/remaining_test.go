@@ -201,6 +201,24 @@ func TestLED001_LedgerIngestionDurability(t *testing.T) {
 		t.Fatalf("LED-001 FAILED: call count=%s, expected %s", actual, expectedCalls)
 	}
 
+	expectedPreviews := fmt.Sprintf("%d", runCount*callsPerRun)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM previews;"); actual != expectedPreviews {
+		t.Fatalf("LED-001 FAILED: preview count=%s, expected %s", actual, expectedPreviews)
+	}
+
+	expectedHints := fmt.Sprintf("%d", runCount*callsPerRun)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM hints;"); actual != expectedHints {
+		t.Fatalf("LED-001 FAILED: hint count=%s, expected %s", actual, expectedHints)
+	}
+
+	expectedPolicies := fmt.Sprintf("%d", runCount)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM policy_versions;"); actual != expectedPolicies {
+		t.Fatalf("LED-001 FAILED: policy version count=%s, expected %s", actual, expectedPolicies)
+	}
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM policy_versions WHERE mode IS NULL OR mode = '';"); actual != "0" {
+		t.Fatalf("LED-001 FAILED: policy version mode count=%s, expected 0", actual)
+	}
+
 	plan := sqliteQuery(t, dbPath, "EXPLAIN QUERY PLAN SELECT * FROM tool_calls WHERE run_id='run-1' ORDER BY created_at LIMIT 5;")
 	if !strings.Contains(plan, "idx_tool_calls_run_created") {
 		t.Fatalf("LED-001 FAILED: expected index usage, plan=%q", plan)
@@ -962,6 +980,8 @@ func buildLedgerEvents(t *testing.T, runCount, callsPerRun int) []byte {
 
 	for runIndex := 0; runIndex < runCount; runIndex++ {
 		runID := fmt.Sprintf("run-%d", runIndex+1)
+		policyID := fmt.Sprintf("policy-%d", runIndex+1)
+		policyHash := fmt.Sprintf("hash-%d", runIndex+1)
 		ts := nextTS()
 		runStart := event.RunStartEvent{
 			Envelope: event.Envelope{
@@ -978,9 +998,9 @@ func buildLedgerEvents(t *testing.T, runCount, callsPerRun int) []byte {
 				StartedAt: ts,
 				Mode:      event.RunModeObserve,
 				Policy: event.PolicyInfo{
-					PolicyID:      "policy-1",
+					PolicyID:      policyID,
 					PolicyVersion: "1",
-					PolicyHash:    "hash-1",
+					PolicyHash:    policyHash,
 				},
 			},
 		}
@@ -1010,7 +1030,8 @@ func buildLedgerEvents(t *testing.T, runCount, callsPerRun int) []byte {
 					ArgsHash:   argsHash,
 					BytesIn:    128,
 					Preview: event.Preview{
-						Truncated: false,
+						Truncated:   false,
+						ArgsPreview: fmt.Sprintf("args-preview-%s", callID),
 					},
 					Seq: callIndex + 1,
 				},
@@ -1044,9 +1065,16 @@ func buildLedgerEvents(t *testing.T, runCount, callsPerRun int) []byte {
 						ReasonCode: "ALLOW",
 					},
 					Policy: event.PolicyInfo{
-						PolicyID:      "policy-1",
+						PolicyID:      policyID,
 						PolicyVersion: "1",
-						PolicyHash:    "hash-1",
+						PolicyHash:    policyHash,
+					},
+					Hint: &event.Hint{
+						HintText: "hint for " + callID,
+						SuggestedArgs: map[string]any{
+							"call_id": callID,
+						},
+						HintKind: event.HintKindArgFix,
 					},
 				},
 			}
@@ -1074,7 +1102,8 @@ func buildLedgerEvents(t *testing.T, runCount, callsPerRun int) []byte {
 				LatencyMS: 4,
 				BytesOut:  256,
 				Preview: event.ResultPreview{
-					Truncated: false,
+					Truncated:     false,
+					ResultPreview: fmt.Sprintf("result-preview-%s", callID),
 				},
 			}
 			appendEvent(t, &buf, endEvent)

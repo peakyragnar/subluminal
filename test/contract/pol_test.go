@@ -250,6 +250,9 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 	}
 
 	// Assert: Decision cites budget rule
+	if err := h.Stop(); err != nil {
+		t.Fatalf("POL-003 FAILED: harness stop error: %v", err)
+	}
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) < 4 {
 		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
@@ -610,11 +613,11 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	}
 
 	// If blocked, verify it was due to risk_class matching
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
+	decisionEvt, err := waitForEventType(h.EventSink, "tool_call_decision", 500*time.Millisecond)
+	if err != nil {
 		t.Fatal("POL-007 FAILED: No decisions captured")
 	}
-	ruleID := testharness.GetString(decisions[0], "decision.rule_id")
+	ruleID := testharness.GetString(*decisionEvt, "decision.rule_id")
 	if ruleID != "deny-write-like" {
 		t.Errorf("POL-007 FAILED: decision.rule_id=%q, expected deny-write-like", ruleID)
 	}
