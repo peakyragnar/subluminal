@@ -158,8 +158,33 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 	skipIfNoShim(t)
 
 	// Note: This test requires a policy with REJECT_WITH_HINT action
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-err-003",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "dedupe-hint",
+				"kind": "dedupe",
+				"match": {"tool_name": {"glob": ["hinted_tool"]}},
+				"effect": {
+					"reason_code": "DEDUPE_HINT",
+					"message": "Duplicate call detected; adjust arguments",
+					"dedupe": {
+						"scope": "tool",
+						"window_ms": 60000,
+						"key": "args_hash",
+						"on_duplicate": "REJECT_WITH_HINT"
+					}
+				}
+			}
+		]
+	}`
 
-	h := newShimHarness()
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
 	h.AddTool("hinted_tool", "A tool that gets hints", nil)
 
 	if err := h.Start(); err != nil {
@@ -169,25 +194,35 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 
 	h.Initialize()
 
-	// Execute: Call tool that triggers hint
-	resp, err := h.CallTool("hinted_tool", map[string]any{"bad_param": true})
+	// Execute: Call tool twice to trigger dedupe hint
+	args := map[string]any{"bad_param": true}
+	resp1, err := h.CallTool("hinted_tool", args)
 	if err != nil {
-		t.Fatalf("Failed to call tool: %v", err)
+		t.Fatalf("Failed to call tool (first call): %v", err)
+	}
+	resp2, err := h.CallTool("hinted_tool", args)
+	if err != nil {
+		t.Fatalf("Failed to call tool (second call): %v", err)
 	}
 
-	wrapped := testharness.WrapResponse(resp)
-	if wrapped.IsSuccess() {
-		t.Skip("ERR-003: Tool was not rejected - needs REJECT_WITH_HINT policy")
+	wrapped1 := testharness.WrapResponse(resp1)
+	if !wrapped1.IsSuccess() {
+		t.Fatalf("ERR-003 FAILED: First call should succeed\n  Error: %s", wrapped1.ErrorMessage())
+	}
+
+	wrapped2 := testharness.WrapResponse(resp2)
+	if wrapped2.IsSuccess() {
+		t.Fatal("ERR-003 FAILED: Second call should be rejected with REJECT_WITH_HINT")
 	}
 
 	// Assert: Error code is -32083 (REJECT_WITH_HINT)
-	if wrapped.ErrorCode() != -32083 {
-		t.Skip("ERR-003: Error code was not -32083 - may not have triggered hint")
+	if wrapped2.ErrorCode() != -32083 {
+		t.Fatalf("ERR-003 FAILED: Expected error code -32083 (REJECT_WITH_HINT), got %d", wrapped2.ErrorCode())
 	}
 
 	// Assert: subluminal.hint object is present with required fields
-	if resp.Error != nil && resp.Error.Data != nil {
-		data, _ := resp.Error.Data.(map[string]any)
+	if resp2.Error != nil && resp2.Error.Data != nil {
+		data, _ := resp2.Error.Data.(map[string]any)
 		subluminal, _ := data["subluminal"].(map[string]any)
 		if subluminal != nil {
 			hint, ok := subluminal["hint"].(map[string]any)
