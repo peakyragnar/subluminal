@@ -245,11 +245,11 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 	}
 
 	// Assert: Decision cites budget rule
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) < 4 {
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 4, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
 		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
 	}
-
+	decisions := h.EventSink.ByType("tool_call_decision")
 	lastDecision := decisions[3]
 	action := testharness.GetString(lastDecision, "decision.action")
 	allowedActions := map[string]bool{"BLOCK": true, "REJECT_WITH_HINT": true, "TERMINATE_RUN": true}
