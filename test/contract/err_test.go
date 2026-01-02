@@ -157,9 +157,8 @@ func TestERR002_ThrottleUsesCorrectErrorCode(t *testing.T) {
 func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: This test requires a policy with REJECT_WITH_HINT action
 	policyJSON := `{
-		"mode": "guardrails",
+		"mode": "control",
 		"policy_id": "test-err-003",
 		"policy_version": "1.0.0",
 		"rules": [
@@ -168,13 +167,14 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 				"kind": "dedupe",
 				"match": {"tool_name": {"glob": ["hinted_tool"]}},
 				"effect": {
-					"reason_code": "DEDUPE_HINT",
-					"message": "Duplicate call detected; adjust arguments",
+					"reason_code": "DEDUPE_DUPLICATE",
+					"message": "Duplicate call detected",
 					"dedupe": {
 						"scope": "tool",
 						"window_ms": 60000,
 						"key": "args_hash",
-						"on_duplicate": "REJECT_WITH_HINT"
+						"on_duplicate": "BLOCK",
+						"hint_text": "Duplicate call detected; modify args or wait before retrying"
 					}
 				}
 			}
@@ -205,19 +205,19 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 		t.Fatalf("Failed to call tool (second call): %v", err)
 	}
 
-	wrapped1 := testharness.WrapResponse(resp1)
-	if !wrapped1.IsSuccess() {
-		t.Fatalf("ERR-003 FAILED: First call should succeed\n  Error: %s", wrapped1.ErrorMessage())
+	if !testharness.WrapResponse(resp1).IsSuccess() {
+		t.Fatal("ERR-003 FAILED: First call should succeed before dedupe hint triggers")
 	}
 
-	wrapped2 := testharness.WrapResponse(resp2)
-	if wrapped2.IsSuccess() {
-		t.Fatal("ERR-003 FAILED: Second call should be rejected with REJECT_WITH_HINT")
+	wrapped := testharness.WrapResponse(resp2)
+	if wrapped.IsSuccess() {
+		t.Fatal("ERR-003 FAILED: Second call should be rejected with hint")
 	}
 
 	// Assert: Error code is -32083 (REJECT_WITH_HINT)
-	if wrapped2.ErrorCode() != -32083 {
-		t.Fatalf("ERR-003 FAILED: Expected error code -32083 (REJECT_WITH_HINT), got %d", wrapped2.ErrorCode())
+	if wrapped.ErrorCode() != -32083 {
+		t.Fatalf("ERR-003 FAILED: Expected error code -32083 (REJECT_WITH_HINT), got %d",
+			wrapped.ErrorCode())
 	}
 
 	// Assert: subluminal.hint object is present with required fields

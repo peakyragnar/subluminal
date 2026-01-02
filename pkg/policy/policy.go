@@ -119,6 +119,7 @@ type Decision struct {
 	Summary    string
 	Severity   event.Severity
 	BackoffMS  int
+	Hint       *event.Hint
 }
 
 type rateLimitConfig struct {
@@ -297,8 +298,9 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 
 			if count >= breaker.RepeatThreshold && breakerDecision == nil {
 				debugLog("    Breaker TRIPPED")
-				action := breakerAction(breaker.OnTrip)
+				action := b.controlAction(breakerAction(breaker.OnTrip))
 				breakerDecision = buildDecision(rule, action, "BREAKER_TRIPPED", "Breaker tripped")
+				attachHint(breakerDecision, breaker.HintText, event.HintKindSafety)
 			}
 			continue
 		}
@@ -350,13 +352,15 @@ func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 		if action == "" {
 			action = actionFromKind(kind)
 		}
-		if action != event.DecisionAllow && action != event.DecisionBlock {
+		action = b.controlAction(action)
+		if action != event.DecisionAllow && action != event.DecisionBlock && action != event.DecisionRejectWithHint {
 			continue
 		}
 
 		if orderedDecision == nil {
 			debugLog("    Rule Decision: %s", action)
 			orderedDecision = buildDecision(rule, action, defaultReason(action), defaultSummary(action))
+			attachHint(orderedDecision, "", event.HintKindOther)
 		}
 	}
 
@@ -446,9 +450,21 @@ func breakerAction(onTrip string) event.DecisionAction {
 		return event.DecisionTerminateRun
 	case "BLOCK":
 		return event.DecisionBlock
+	case "REJECT_WITH_HINT":
+		return event.DecisionRejectWithHint
 	default:
 		return event.DecisionBlock
 	}
+}
+
+func (b *Bundle) controlAction(action event.DecisionAction) event.DecisionAction {
+	if b.Mode != event.RunModeControl {
+		return action
+	}
+	if action == event.DecisionBlock {
+		return event.DecisionRejectWithHint
+	}
+	return action
 }
 
 func buildDecision(rule Rule, action event.DecisionAction, fallbackReason, fallbackSummary string) *Decision {
@@ -473,6 +489,35 @@ func buildDecision(rule Rule, action event.DecisionAction, fallbackReason, fallb
 		ReasonCode: reason,
 		Summary:    summary,
 		Severity:   severity,
+	}
+}
+
+func attachHint(decision *Decision, hintText string, kind event.HintKind) {
+	if decision == nil || decision.Action != event.DecisionRejectWithHint {
+		return
+	}
+	if kind == "" {
+		kind = event.HintKindOther
+	}
+
+	text := strings.TrimSpace(hintText)
+	if text == "" {
+		text = defaultString(decision.Summary, "Rejected with hint")
+	}
+
+	if decision.Hint == nil {
+		decision.Hint = &event.Hint{
+			HintText: text,
+			HintKind: kind,
+		}
+		return
+	}
+
+	if strings.TrimSpace(decision.Hint.HintText) == "" {
+		decision.Hint.HintText = text
+	}
+	if decision.Hint.HintKind == "" {
+		decision.Hint.HintKind = kind
 	}
 }
 
@@ -515,10 +560,13 @@ func (b *Bundle) applyBudgetDecision(rule Rule, ruleIndex int, serverName, toolN
 	if action == "" {
 		action = event.DecisionBlock
 	}
+	action = b.controlAction(action)
 	reason := defaultString(rule.Effect.ReasonCode, "BUDGET_EXCEEDED")
 	summary := defaultString(rule.Effect.Message, "Budget exceeded")
 
-	return buildDecision(rule, action, reason, summary)
+	decision := buildDecision(rule, action, reason, summary)
+	attachHint(decision, rule.Effect.Budget.HintText, event.HintKindBudget)
+	return decision
 }
 
 func budgetKey(ruleID string, ruleIndex int, scope, serverName, toolName string) string {
@@ -550,7 +598,7 @@ func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolNam
 		return Decision{}, false
 	}
 
-	action := config.OnLimit
+	action := b.controlAction(config.OnLimit)
 	severity := normalizeSeverity(rule.Severity)
 	reason := defaultString(rule.Effect.ReasonCode, defaultReason(action))
 	summary := defaultString(rule.Effect.Message, defaultSummary(action))
@@ -565,6 +613,7 @@ func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolNam
 	if action == event.DecisionThrottle {
 		decision.BackoffMS = config.BackoffMS
 	}
+	attachHint(&decision, rule.Effect.RateLimit.HintText, event.HintKindRate)
 
 	if rule.RuleID == "" {
 		return decision, true
@@ -614,29 +663,24 @@ func (b *Bundle) evaluateDedupe(rule Rule, serverName, toolName, argsHash string
 	if action == "" {
 		action = event.DecisionBlock
 	}
+	action = b.controlAction(action)
 
 	severity := normalizeSeverity(rule.Severity)
 	reason := defaultString(rule.Effect.ReasonCode, "DEDUPE_DUPLICATE")
 	summary := defaultString(rule.Effect.Message, "Duplicate call blocked by dedupe window")
-
-	if rule.RuleID == "" {
-		return Decision{
-			Action:     action,
-			RuleID:     nil,
-			ReasonCode: reason,
-			Summary:    summary,
-			Severity:   severity,
-		}, true
-	}
-
-	ruleID := rule.RuleID
-	return Decision{
+	decision := Decision{
 		Action:     action,
-		RuleID:     &ruleID,
+		RuleID:     nil,
 		ReasonCode: reason,
 		Summary:    summary,
 		Severity:   severity,
-	}, true
+	}
+	if rule.RuleID != "" {
+		ruleID := rule.RuleID
+		decision.RuleID = &ruleID
+	}
+	attachHint(&decision, effect.HintText, event.HintKindSafety)
+	return decision, true
 }
 
 func dedupeKeySupported(key string) bool {
