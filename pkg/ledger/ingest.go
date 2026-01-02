@@ -159,6 +159,27 @@ func writeSchema(w *bufio.Writer) error {
 			preview_truncated INTEGER,
 			created_at TEXT
 		);`,
+		`CREATE TABLE IF NOT EXISTS previews (
+			call_id TEXT PRIMARY KEY,
+			args_preview TEXT,
+			result_preview TEXT,
+			redaction_flags TEXT
+		);`,
+		`CREATE TABLE IF NOT EXISTS hints (
+			call_id TEXT PRIMARY KEY,
+			hint_text TEXT,
+			suggested_args_json TEXT,
+			created_at TEXT
+		);`,
+		`CREATE TABLE IF NOT EXISTS policy_versions (
+			policy_id TEXT,
+			version TEXT,
+			mode TEXT,
+			rules_hash TEXT,
+			rules_json TEXT,
+			created_at TEXT,
+			PRIMARY KEY (policy_id, version)
+		);`,
 		"CREATE INDEX IF NOT EXISTS idx_tool_calls_run_created ON tool_calls(run_id, created_at);",
 		"CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(server_name, tool_name);",
 		"CREATE INDEX IF NOT EXISTS idx_tool_calls_decision_status ON tool_calls(decision, status);",
@@ -189,7 +210,10 @@ func writeRunStart(w *bufio.Writer, evt event.RunStartEvent) error {
 		sqlText(evt.Run.StartedAt),
 		sqlText(metadata),
 	)
-	return writeLine(w, stmt)
+	if err := writeLine(w, stmt); err != nil {
+		return err
+	}
+	return writePolicyVersion(w, evt.Run.Policy, string(evt.Run.Mode), evt.Run.StartedAt)
 }
 
 func writeRunEnd(w *bufio.Writer, evt event.RunEndEvent) error {
@@ -207,7 +231,7 @@ func writeToolCallStart(w *bufio.Writer, evt event.ToolCallStartEvent) error {
 	stmt := fmt.Sprintf(
 		"INSERT INTO tool_calls (call_id, run_id, server_name, tool_name, args_hash, bytes_in, preview_truncated, created_at) "+
 			"VALUES (%s, %s, %s, %s, %s, %d, %s, %s) "+
-			"ON CONFLICT(call_id) DO UPDATE SET run_id=excluded.run_id, server_name=excluded.server_name, tool_name=excluded.tool_name, args_hash=excluded.args_hash, bytes_in=excluded.bytes_in, preview_truncated=excluded.preview_truncated, created_at=excluded.created_at;",
+			"ON CONFLICT(call_id) DO UPDATE SET run_id=excluded.run_id, server_name=excluded.server_name, tool_name=excluded.tool_name, args_hash=excluded.args_hash, bytes_in=excluded.bytes_in, preview_truncated=CASE WHEN excluded.preview_truncated=1 OR tool_calls.preview_truncated=1 THEN 1 ELSE 0 END, created_at=excluded.created_at;",
 		sqlText(evt.Call.CallID),
 		sqlText(evt.RunID),
 		sqlText(evt.Call.ServerName),
@@ -217,7 +241,10 @@ func writeToolCallStart(w *bufio.Writer, evt event.ToolCallStartEvent) error {
 		sqlBool(evt.Call.Preview.Truncated),
 		sqlText(evt.TS),
 	)
-	return writeLine(w, stmt)
+	if err := writeLine(w, stmt); err != nil {
+		return err
+	}
+	return writePreviewArgs(w, evt.Call.CallID, evt.Call.Preview)
 }
 
 func writeToolCallDecision(w *bufio.Writer, evt event.ToolCallDecisionEvent) error {
@@ -234,13 +261,22 @@ func writeToolCallDecision(w *bufio.Writer, evt event.ToolCallDecisionEvent) err
 		sqlText(ruleID),
 		sqlText(evt.TS),
 	)
-	return writeLine(w, stmt)
+	if err := writeLine(w, stmt); err != nil {
+		return err
+	}
+	if err := writePolicyVersion(w, evt.Decision.Policy, "", evt.TS); err != nil {
+		return err
+	}
+	if evt.Decision.Hint == nil {
+		return nil
+	}
+	return writeHint(w, evt.Call.CallID, *evt.Decision.Hint, evt.TS)
 }
 
 func writeToolCallEnd(w *bufio.Writer, evt event.ToolCallEndEvent) error {
 	stmt := fmt.Sprintf(
 		"INSERT INTO tool_calls (call_id, run_id, status, latency_ms, bytes_out, preview_truncated, created_at) VALUES (%s, %s, %s, %d, %d, %s, %s) "+
-			"ON CONFLICT(call_id) DO UPDATE SET status=excluded.status, latency_ms=excluded.latency_ms, bytes_out=excluded.bytes_out, preview_truncated=excluded.preview_truncated;",
+			"ON CONFLICT(call_id) DO UPDATE SET status=excluded.status, latency_ms=excluded.latency_ms, bytes_out=excluded.bytes_out, preview_truncated=CASE WHEN excluded.preview_truncated=1 OR tool_calls.preview_truncated=1 THEN 1 ELSE 0 END;",
 		sqlText(evt.Call.CallID),
 		sqlText(evt.RunID),
 		sqlText(string(evt.Status)),
@@ -248,6 +284,73 @@ func writeToolCallEnd(w *bufio.Writer, evt event.ToolCallEndEvent) error {
 		evt.BytesOut,
 		sqlBool(evt.Preview.Truncated),
 		sqlText(evt.TS),
+	)
+	if err := writeLine(w, stmt); err != nil {
+		return err
+	}
+	return writePreviewResult(w, evt.Call.CallID, evt.Preview)
+}
+
+func writePreviewArgs(w *bufio.Writer, callID string, preview event.Preview) error {
+	stmt := fmt.Sprintf(
+		"INSERT INTO previews (call_id, args_preview, redaction_flags) VALUES (%s, %s, %s) "+
+			"ON CONFLICT(call_id) DO UPDATE SET args_preview=excluded.args_preview;",
+		sqlText(callID),
+		sqlText(preview.ArgsPreview),
+		sqlText(""),
+	)
+	return writeLine(w, stmt)
+}
+
+func writePreviewResult(w *bufio.Writer, callID string, preview event.ResultPreview) error {
+	stmt := fmt.Sprintf(
+		"INSERT INTO previews (call_id, result_preview) VALUES (%s, %s) "+
+			"ON CONFLICT(call_id) DO UPDATE SET result_preview=excluded.result_preview;",
+		sqlText(callID),
+		sqlText(preview.ResultPreview),
+	)
+	return writeLine(w, stmt)
+}
+
+func writeHint(w *bufio.Writer, callID string, hint event.Hint, createdAt string) error {
+	suggested := ""
+	if len(hint.SuggestedArgs) > 0 {
+		var err error
+		suggested, err = marshalJSON(hint.SuggestedArgs)
+		if err != nil {
+			return err
+		}
+	}
+	stmt := fmt.Sprintf(
+		"INSERT INTO hints (call_id, hint_text, suggested_args_json, created_at) VALUES (%s, %s, %s, %s) "+
+			"ON CONFLICT(call_id) DO UPDATE SET hint_text=excluded.hint_text, suggested_args_json=excluded.suggested_args_json, created_at=excluded.created_at;",
+		sqlText(callID),
+		sqlText(hint.HintText),
+		sqlText(suggested),
+		sqlText(createdAt),
+	)
+	return writeLine(w, stmt)
+}
+
+func writePolicyVersion(w *bufio.Writer, policy event.PolicyInfo, mode string, createdAt string) error {
+	policyID := strings.TrimSpace(policy.PolicyID)
+	version := strings.TrimSpace(policy.PolicyVersion)
+	if policyID == "" || version == "" {
+		return nil
+	}
+	stmt := fmt.Sprintf(
+		"INSERT INTO policy_versions (policy_id, version, mode, rules_hash, rules_json, created_at) VALUES (%s, %s, %s, %s, %s, %s) "+
+			"ON CONFLICT(policy_id, version) DO UPDATE SET "+
+			"mode=COALESCE(excluded.mode, policy_versions.mode), "+
+			"rules_hash=COALESCE(excluded.rules_hash, policy_versions.rules_hash), "+
+			"rules_json=COALESCE(excluded.rules_json, policy_versions.rules_json), "+
+			"created_at=COALESCE(policy_versions.created_at, excluded.created_at);",
+		sqlText(policyID),
+		sqlText(version),
+		sqlText(mode),
+		sqlText(policy.PolicyHash),
+		sqlText(""),
+		sqlText(createdAt),
 	)
 	return writeLine(w, stmt)
 }
