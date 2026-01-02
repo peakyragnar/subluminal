@@ -140,7 +140,8 @@ func (e *Emitter) Emit(evt any) bool {
 	return e.enqueue(data, kind)
 }
 
-// EmitSync serializes and queues an event, then waits until it is written.
+// EmitSync serializes and queues an event.
+// Non-decision events wait until written; decisions wait only for queue space.
 func (e *Emitter) EmitSync(evt any) bool {
 	kind, previewable := classifyEvent(evt)
 	overloaded := e.shouldDropPreview()
@@ -154,7 +155,7 @@ func (e *Emitter) EmitSync(evt any) bool {
 	}
 
 	if kind == eventKindDecision {
-		return e.enqueue(data, kind)
+		return e.enqueueDecision(data)
 	}
 
 	return e.enqueueSync(data, kind)
@@ -209,6 +210,29 @@ func (e *Emitter) enqueue(data []byte, kind eventKind) bool {
 	e.queue = append(e.queue, queuedEvent{data: data, kind: kind})
 	e.notEmpty.Signal()
 	return true
+}
+
+func (e *Emitter) enqueueDecision(data []byte) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for {
+		if e.closed {
+			return false
+		}
+
+		if len(e.queue) < e.capacity {
+			e.queue = append(e.queue, queuedEvent{data: data, kind: eventKindDecision})
+			e.notEmpty.Signal()
+			return true
+		}
+
+		if e.evictPreviewLocked() {
+			continue
+		}
+
+		e.notFull.Wait()
+	}
 }
 
 func (e *Emitter) enqueueSync(data []byte, kind eventKind) bool {

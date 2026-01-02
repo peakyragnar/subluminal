@@ -261,6 +261,56 @@ func TestLED002_BackpressureDropsPreviewsNotDecisions(t *testing.T) {
 	}
 }
 
+func TestLED002_DecisionsBlockWhenQueueFull(t *testing.T) {
+	release := make(chan struct{})
+	writer := newBlockingWriter(release)
+
+	emitter := core.NewEmitterWithOptions(writer, core.EmitterOptions{
+		BufferSize:           2,
+		PreviewDropThreshold: 1,
+	})
+	emitter.Start()
+
+	const totalDecisions = 4
+	emitDone := make(chan struct{})
+	go func() {
+		defer close(emitDone)
+		for i := 0; i < totalDecisions; i++ {
+			callID := fmt.Sprintf("decision-%d", i)
+			emitter.EmitSync(makeDecisionEvent(callID))
+		}
+	}()
+
+	select {
+	case <-emitDone:
+		t.Fatal("LED-002 FAILED: decisions dropped instead of waiting for queue space")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-emitDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("LED-002 FAILED: decisions did not drain after release")
+	}
+
+	emitter.Close()
+
+	sink := testharness.NewEventSink()
+	if err := sink.Capture(bytes.NewReader(writer.Bytes())); err != nil {
+		t.Fatalf("LED-002 FAILED: event capture error: %v", err)
+	}
+	if errors := sink.Errors(); len(errors) > 0 {
+		t.Fatalf("LED-002 FAILED: event parse errors: %v", errors)
+	}
+
+	decisions := sink.ByType(string(event.EventTypeToolCallDecision))
+	if len(decisions) != totalDecisions {
+		t.Fatalf("LED-002 FAILED: expected %d decision events, got %d", totalDecisions, len(decisions))
+	}
+}
+
 type blockingWriter struct {
 	release <-chan struct{}
 	mu      sync.Mutex
