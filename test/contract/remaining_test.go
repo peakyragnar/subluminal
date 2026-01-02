@@ -13,9 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/subluminal/subluminal/pkg/core"
 	"github.com/subluminal/subluminal/pkg/event"
 	"github.com/subluminal/subluminal/pkg/importer"
 	"github.com/subluminal/subluminal/pkg/ledger"
@@ -192,14 +194,173 @@ func TestLED001_LedgerIngestionDurability(t *testing.T) {
 // =============================================================================
 
 func TestLED002_BackpressureDropsPreviewsNotDecisions(t *testing.T) {
-	t.Skip("LED-002: Requires ledger component with backpressure simulation")
+	release := make(chan struct{})
+	writer := newBlockingWriter(release)
 
-	// This test would:
-	// 1. Force ingest overload (slow disk simulation)
-	// 2. Burst events at high rate
-	// 3. Verify decision events persist
-	// 4. Verify preview fields may be dropped/truncated
-	// 5. Verify shim doesn't block
+	emitter := core.NewEmitterWithOptions(writer, core.EmitterOptions{
+		BufferSize:           8,
+		PreviewDropThreshold: 4,
+	})
+	emitter.Start()
+
+	const totalCalls = 6
+	emitDone := make(chan struct{})
+	go func() {
+		defer close(emitDone)
+		for i := 0; i < totalCalls; i++ {
+			callID := fmt.Sprintf("call-%d", i)
+			emitter.Emit(makeStartEvent(callID, i+1))
+			emitter.EmitSync(makeDecisionEvent(callID))
+			emitter.Emit(makeEndEvent(callID))
+		}
+	}()
+
+	select {
+	case <-emitDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("LED-002 FAILED: emitter blocked under backpressure")
+	}
+
+	close(release)
+	emitter.Close()
+
+	sink := testharness.NewEventSink()
+	if err := sink.Capture(bytes.NewReader(writer.Bytes())); err != nil {
+		t.Fatalf("LED-002 FAILED: event capture error: %v", err)
+	}
+	if errors := sink.Errors(); len(errors) > 0 {
+		t.Fatalf("LED-002 FAILED: event parse errors: %v", errors)
+	}
+
+	decisions := sink.ByType(string(event.EventTypeToolCallDecision))
+	if len(decisions) != totalCalls {
+		t.Fatalf("LED-002 FAILED: expected %d decision events, got %d", totalCalls, len(decisions))
+	}
+
+	var previewDropped bool
+	for _, evt := range sink.ByType(string(event.EventTypeToolCallStart)) {
+		truncated := testharness.GetBool(evt, "call.preview.truncated")
+		argsPreview := testharness.GetString(evt, "call.preview.args_preview")
+		if truncated && argsPreview == "" {
+			previewDropped = true
+			break
+		}
+	}
+	if !previewDropped {
+		for _, evt := range sink.ByType(string(event.EventTypeToolCallEnd)) {
+			truncated := testharness.GetBool(evt, "preview.truncated")
+			resultPreview := testharness.GetString(evt, "preview.result_preview")
+			if truncated && resultPreview == "" {
+				previewDropped = true
+				break
+			}
+		}
+	}
+	if !previewDropped {
+		t.Error("LED-002 FAILED: expected preview fields to be dropped under backpressure")
+	}
+}
+
+type blockingWriter struct {
+	release <-chan struct{}
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func newBlockingWriter(release <-chan struct{}) *blockingWriter {
+	return &blockingWriter{release: release}
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *blockingWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buf.Bytes()...)
+}
+
+func makeEnvelope(eventType event.EventType) event.Envelope {
+	return event.Envelope{
+		V:       core.InterfaceVersion,
+		Type:    eventType,
+		TS:      time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:   "run-led-002",
+		AgentID: "agent-led-002",
+		Client:  event.ClientCodex,
+		Env:     event.EnvCI,
+		Source: event.Source{
+			HostID: "host-led-002",
+			ProcID: "proc-led-002",
+			ShimID: "shim-led-002",
+		},
+	}
+}
+
+func makeCallRef(callID string) event.CallRef {
+	return event.CallRef{
+		CallID:     callID,
+		ServerName: "server-led-002",
+		ToolName:   "tool-led-002",
+		ArgsHash:   "hash-led-002",
+	}
+}
+
+func makeStartEvent(callID string, seq int) event.ToolCallStartEvent {
+	return event.ToolCallStartEvent{
+		Envelope: makeEnvelope(event.EventTypeToolCallStart),
+		Call: event.CallInfo{
+			CallID:     callID,
+			ServerName: "server-led-002",
+			ToolName:   "tool-led-002",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash-led-002",
+			BytesIn:    42,
+			Preview: event.Preview{
+				Truncated:   false,
+				ArgsPreview: "args-preview-" + callID,
+			},
+			Seq: seq,
+		},
+	}
+}
+
+func makeDecisionEvent(callID string) event.ToolCallDecisionEvent {
+	return event.ToolCallDecisionEvent{
+		Envelope: makeEnvelope(event.EventTypeToolCallDecision),
+		Call:     makeCallRef(callID),
+		Decision: event.Decision{
+			Action:   event.DecisionAllow,
+			Severity: event.SeverityInfo,
+			Explain: event.DecisionExplain{
+				Summary:    "allowed",
+				ReasonCode: "ALLOW",
+			},
+			Policy: event.PolicyInfo{
+				PolicyID:      "policy-led-002",
+				PolicyVersion: "0.1.0",
+				PolicyHash:    "hash-led-002",
+			},
+		},
+	}
+}
+
+func makeEndEvent(callID string) event.ToolCallEndEvent {
+	return event.ToolCallEndEvent{
+		Envelope:  makeEnvelope(event.EventTypeToolCallEnd),
+		Call:      makeCallRef(callID),
+		Status:    event.CallStatusOK,
+		LatencyMS: 5,
+		BytesOut:  24,
+		Preview: event.ResultPreview{
+			Truncated:     false,
+			ResultPreview: "result-preview-" + callID,
+		},
+	}
 }
 
 // =============================================================================
