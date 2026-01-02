@@ -20,6 +20,8 @@ func run(args []string) int {
 		return runImport(args[1:])
 	case "restore":
 		return runRestore(args[1:])
+	case "ledgerd":
+		return runLedgerd(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -31,7 +33,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: sub <command> <client>")
-	fmt.Fprintln(os.Stderr, "Commands: import, restore")
+	fmt.Fprintln(os.Stderr, "Usage: sub <command> [options]")
+	fmt.Fprintln(os.Stderr, "Commands: import, restore, ledgerd")
 	fmt.Fprintln(os.Stderr, "Clients: claude, codex")
 }
