@@ -152,6 +152,18 @@ const (
 	DecisionTerminateRun   DecisionAction = "TERMINATE_RUN"
 )
 
+// HintKind represents the type of recovery hint.
+// Per Interface-Pack §3.2.4.
+type HintKind string
+
+const (
+	HintKindArgFix HintKind = "ARG_FIX"
+	HintKindBudget HintKind = "BUDGET"
+	HintKindRate   HintKind = "RATE"
+	HintKindSafety HintKind = "SAFETY"
+	HintKindOther  HintKind = "OTHER"
+)
+
 // Severity represents the severity level.
 // Per Interface-Pack §1.6
 type Severity string
@@ -167,6 +179,15 @@ const (
 type DecisionExplain struct {
 	Summary    string `json:"summary"`
 	ReasonCode string `json:"reason_code"`
+}
+
+// Hint contains structured recovery guidance for REJECT_WITH_HINT.
+// Per Interface-Pack §3.2.4.
+type Hint struct {
+	HintText      string         `json:"hint_text"`
+	SuggestedArgs map[string]any `json:"suggested_args,omitempty"`
+	RetryAdvice   *string        `json:"retry_advice,omitempty"`
+	HintKind      HintKind       `json:"hint_kind"`
 }
 
 // CallRef contains minimal call identification for decision/end events.
@@ -186,6 +207,7 @@ type Decision struct {
 	Severity  Severity        `json:"severity"`
 	Explain   DecisionExplain `json:"explain"`
 	BackoffMS int             `json:"backoff_ms,omitempty"`
+	Hint      *Hint           `json:"hint,omitempty"`
 	Policy    PolicyInfo      `json:"policy"`
 }
 

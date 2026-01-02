@@ -157,9 +157,8 @@ func TestERR002_ThrottleUsesCorrectErrorCode(t *testing.T) {
 func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 	skipIfNoShim(t)
 
-	// Note: This test requires a policy with REJECT_WITH_HINT action
 	policyJSON := `{
-		"mode": "guardrails",
+		"mode": "control",
 		"policy_id": "test-err-003",
 		"policy_version": "1.0.0",
 		"rules": [
@@ -168,13 +167,14 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 				"kind": "dedupe",
 				"match": {"tool_name": {"glob": ["hinted_tool"]}},
 				"effect": {
-					"reason_code": "DEDUPE_HINT",
-					"message": "Duplicate call detected; adjust arguments",
+					"reason_code": "DEDUPE_DUPLICATE",
+					"message": "Duplicate call detected",
 					"dedupe": {
 						"scope": "tool",
 						"window_ms": 60000,
 						"key": "args_hash",
-						"on_duplicate": "REJECT_WITH_HINT"
+						"on_duplicate": "BLOCK",
+						"hint_text": "Duplicate call detected; modify args or wait before retrying"
 					}
 				}
 			}
@@ -205,19 +205,19 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 		t.Fatalf("Failed to call tool (second call): %v", err)
 	}
 
-	wrapped1 := testharness.WrapResponse(resp1)
-	if !wrapped1.IsSuccess() {
-		t.Fatalf("ERR-003 FAILED: First call should succeed\n  Error: %s", wrapped1.ErrorMessage())
+	if !testharness.WrapResponse(resp1).IsSuccess() {
+		t.Fatal("ERR-003 FAILED: First call should succeed before dedupe hint triggers")
 	}
 
-	wrapped2 := testharness.WrapResponse(resp2)
-	if wrapped2.IsSuccess() {
-		t.Fatal("ERR-003 FAILED: Second call should be rejected with REJECT_WITH_HINT")
+	wrapped := testharness.WrapResponse(resp2)
+	if wrapped.IsSuccess() {
+		t.Fatal("ERR-003 FAILED: Second call should be rejected with hint")
 	}
 
 	// Assert: Error code is -32083 (REJECT_WITH_HINT)
-	if wrapped2.ErrorCode() != -32083 {
-		t.Fatalf("ERR-003 FAILED: Expected error code -32083 (REJECT_WITH_HINT), got %d", wrapped2.ErrorCode())
+	if wrapped.ErrorCode() != -32083 {
+		t.Fatalf("ERR-003 FAILED: Expected error code -32083 (REJECT_WITH_HINT), got %d",
+			wrapped.ErrorCode())
 	}
 
 	// Assert: subluminal.hint object is present with required fields
@@ -329,6 +329,71 @@ func TestERR004_NoSecretLeakageInErrors(t *testing.T) {
 	}
 
 	// Assert: Event previews contain no secrets
+	for _, evt := range h.Events() {
+		raw := evt.Raw
+		for _, secret := range knownSecrets {
+			if strings.Contains(raw, secret) {
+				t.Errorf("ERR-004 FAILED: Event contains secret!\n"+
+					"  Per Interface-Pack §4, secrets must NEVER appear in events\n"+
+					"  Found in event %d (type=%s)", evt.Index, evt.Type)
+			}
+		}
+	}
+}
+
+func TestERR004_NoSecretLeakageInHintText(t *testing.T) {
+	skipIfNoShim(t)
+
+	policyJSON := `{
+		"mode": "control",
+		"policy_id": "test-err-004-hint",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-secret-hint",
+				"kind": "deny",
+				"match": {"tool_name": {"glob": ["secret_hint_tool"]}},
+				"effect": {"action": "BLOCK", "reason_code": "TEST_HINT", "message": "Hint includes sk-secret-key-12345 ghp_github_token_abc password123"}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
+	h.AddTool("secret_hint_tool", "A tool with secrets in hints", nil)
+
+	if err := h.Start(); err != nil {
+		t.Fatalf("Failed to start harness: %v", err)
+	}
+	defer h.Stop()
+
+	h.Initialize()
+
+	knownSecrets := []string{
+		"sk-secret-key-12345",
+		"ghp_github_token_abc",
+		"password123",
+	}
+
+	resp, _ := h.CallTool("secret_hint_tool", nil)
+	wrapped := testharness.WrapResponse(resp)
+	if wrapped.IsSuccess() {
+		t.Fatal("ERR-004 FAILED: Tool should have been rejected with hint")
+	}
+
+	if resp.Error != nil && resp.Error.Data != nil {
+		dataStr := stringify(resp.Error.Data)
+		for _, secret := range knownSecrets {
+			if strings.Contains(dataStr, secret) {
+				t.Errorf("ERR-004 FAILED: Error data contains secret!\n"+
+					"  Per Interface-Pack §4, secrets must NEVER appear in error data\n"+
+					"  Found: %q in error.data", secret)
+			}
+		}
+	}
+
 	for _, evt := range h.Events() {
 		raw := evt.Raw
 		for _, secret := range knownSecrets {
