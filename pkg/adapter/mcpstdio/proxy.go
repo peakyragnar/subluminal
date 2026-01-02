@@ -206,7 +206,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 			ReasonCode: policyDecision.ReasonCode,
 		},
 		BackoffMS: policyDecision.BackoffMS,
-		Hint:      policyDecision.Hint,
+		Hint:      sanitizeHint(policyDecision.Hint),
 		Policy:    p.policy.Info,
 	}
 	if decision.Action == event.DecisionThrottle && decision.BackoffMS <= 0 {
@@ -473,10 +473,10 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 				hintKind = string(decision.Hint.HintKind)
 			}
 			if decision.Hint.SuggestedArgs != nil {
-				hint["suggested_args"] = decision.Hint.SuggestedArgs
+				hint["suggested_args"] = sanitizeValue(decision.Hint.SuggestedArgs)
 			}
 			if decision.Hint.RetryAdvice != nil {
-				hint["retry_advice"] = *decision.Hint.RetryAdvice
+				hint["retry_advice"] = redactSecrets(*decision.Hint.RetryAdvice)
 			}
 		}
 		if hintText == "" {
@@ -485,6 +485,7 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 		if hintText == "" {
 			hintText = "Rejected with hint"
 		}
+		hintText = redactSecrets(hintText)
 		hint["hint_text"] = hintText
 		hint["hint_kind"] = hintKind
 		subluminal["hint"] = hint

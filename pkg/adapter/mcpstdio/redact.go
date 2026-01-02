@@ -1,6 +1,10 @@
 package mcpstdio
 
-import "regexp"
+import (
+	"regexp"
+
+	"github.com/subluminal/subluminal/pkg/event"
+)
 
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`sk-[A-Za-z0-9-_]{6,}`),
@@ -39,4 +43,26 @@ func sanitizeValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func sanitizeHint(hint *event.Hint) *event.Hint {
+	if hint == nil {
+		return nil
+	}
+
+	sanitized := *hint
+	sanitized.HintText = redactSecrets(hint.HintText)
+
+	if hint.SuggestedArgs != nil {
+		if args, ok := sanitizeValue(hint.SuggestedArgs).(map[string]any); ok {
+			sanitized.SuggestedArgs = args
+		}
+	}
+
+	if hint.RetryAdvice != nil {
+		redacted := redactSecrets(*hint.RetryAdvice)
+		sanitized.RetryAdvice = &redacted
+	}
+
+	return &sanitized
 }

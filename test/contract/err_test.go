@@ -341,6 +341,71 @@ func TestERR004_NoSecretLeakageInErrors(t *testing.T) {
 	}
 }
 
+func TestERR004_NoSecretLeakageInHintText(t *testing.T) {
+	skipIfNoShim(t)
+
+	policyJSON := `{
+		"mode": "control",
+		"policy_id": "test-err-004-hint",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-secret-hint",
+				"kind": "deny",
+				"match": {"tool_name": {"glob": ["secret_hint_tool"]}},
+				"effect": {"action": "BLOCK", "reason_code": "TEST_HINT", "message": "Hint includes sk-secret-key-12345 ghp_github_token_abc password123"}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
+	h.AddTool("secret_hint_tool", "A tool with secrets in hints", nil)
+
+	if err := h.Start(); err != nil {
+		t.Fatalf("Failed to start harness: %v", err)
+	}
+	defer h.Stop()
+
+	h.Initialize()
+
+	knownSecrets := []string{
+		"sk-secret-key-12345",
+		"ghp_github_token_abc",
+		"password123",
+	}
+
+	resp, _ := h.CallTool("secret_hint_tool", nil)
+	wrapped := testharness.WrapResponse(resp)
+	if wrapped.IsSuccess() {
+		t.Fatal("ERR-004 FAILED: Tool should have been rejected with hint")
+	}
+
+	if resp.Error != nil && resp.Error.Data != nil {
+		dataStr := stringify(resp.Error.Data)
+		for _, secret := range knownSecrets {
+			if strings.Contains(dataStr, secret) {
+				t.Errorf("ERR-004 FAILED: Error data contains secret!\n"+
+					"  Per Interface-Pack §4, secrets must NEVER appear in error data\n"+
+					"  Found: %q in error.data", secret)
+			}
+		}
+	}
+
+	for _, evt := range h.Events() {
+		raw := evt.Raw
+		for _, secret := range knownSecrets {
+			if strings.Contains(raw, secret) {
+				t.Errorf("ERR-004 FAILED: Event contains secret!\n"+
+					"  Per Interface-Pack §4, secrets must NEVER appear in events\n"+
+					"  Found in event %d (type=%s)", evt.Index, evt.Type)
+			}
+		}
+	}
+}
+
 // stringify converts any value to a string for secret scanning
 func stringify(v any) string {
 	switch val := v.(type) {
