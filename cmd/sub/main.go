@@ -22,6 +22,8 @@ func run(args []string) int {
 		return runRestore(args[1:])
 	case "ledgerd":
 		return runLedgerd(args[1:])
+	case "policy":
+		return runPolicy(args[1:])
 	case "run":
 		return runRun(args[1:])
 	case "tail":
@@ -44,6 +46,6 @@ func run(args []string) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: sub <command> [options]")
-	fmt.Fprintln(os.Stderr, "Commands: import, restore, ledgerd, run, tail, query, doctor, version")
+	fmt.Fprintln(os.Stderr, "Commands: import, restore, ledgerd, policy, run, tail, query, doctor, version")
 	fmt.Fprintln(os.Stderr, "Clients: claude, codex, headless, custom")
 }
