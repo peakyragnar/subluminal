@@ -49,6 +49,7 @@ const (
 	EventTypeToolCallDecision EventType = "tool_call_decision"
 	EventTypeToolCallEnd      EventType = "tool_call_end"
 	EventTypeRunEnd           EventType = "run_end"
+	EventTypeSecretInjection  EventType = "secret_injection"
 )
 
 // Source identifies the producer instance.
@@ -103,6 +104,20 @@ type CallInfo struct {
 type ToolCallStartEvent struct {
 	Envelope
 	Call CallInfo `json:"call"`
+}
+
+// =============================================================================
+// secret_injection event types (Interface-Pack §4)
+// =============================================================================
+
+// SecretInjectionEvent represents secret injection metadata.
+// Only metadata is allowed, never secret values.
+type SecretInjectionEvent struct {
+	Envelope
+	InjectAs  string `json:"inject_as"`
+	SecretRef string `json:"secret_ref"`
+	Source    string `json:"source"`
+	Success   bool   `json:"success"`
 }
 
 // =============================================================================

@@ -8,13 +8,13 @@ import (
 func TestParseSecretBindingsArray(t *testing.T) {
 	raw := []any{
 		map[string]any{
-			"inject_as": "API_TOKEN",
+			"inject_as":  "API_TOKEN",
 			"secret_ref": "github_token",
 			"source":     "env",
 			"redact":     false,
 		},
 		map[string]any{
-			"inject_as": "OTHER_TOKEN",
+			"inject_as":  "OTHER_TOKEN",
 			"secret_ref": "other_token",
 		},
 	}
@@ -98,7 +98,7 @@ func TestParseSecretBindingsErrors(t *testing.T) {
 			name: "invalid source",
 			raw: []any{
 				map[string]any{
-					"inject_as": "API_TOKEN",
+					"inject_as":  "API_TOKEN",
 					"secret_ref": "github_token",
 					"source":     "nope",
 				},
@@ -108,11 +108,11 @@ func TestParseSecretBindingsErrors(t *testing.T) {
 			name: "duplicate inject_as",
 			raw: []any{
 				map[string]any{
-					"inject_as": "API_TOKEN",
+					"inject_as":  "API_TOKEN",
 					"secret_ref": "one",
 				},
 				map[string]any{
-					"inject_as": "API_TOKEN",
+					"inject_as":  "API_TOKEN",
 					"secret_ref": "two",
 				},
 			},

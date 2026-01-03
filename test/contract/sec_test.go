@@ -5,9 +5,12 @@
 package contract
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/subluminal/subluminal/pkg/secret"
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
 
@@ -25,7 +28,27 @@ func TestSEC001_SecretInjectionAgentNeverSeesSecrets(t *testing.T) {
 	// - Secret bindings configured for the tool server
 	// - Upstream tool that uses the injected env var
 
-	h := newShimHarness()
+	secretValue := "sk-secret-api-key-xyz123"
+	storePath := writeSecretStore(t, secret.Store{
+		"api_token": secret.NewEntry(secretValue, "file"),
+	})
+	envVar := "SUBLUMINAL_TEST_API_TOKEN"
+	secretBindings := makeSecretBindingsJSON(t, "test", []secret.Binding{
+		{
+			InjectAs:  envVar,
+			SecretRef: "api_token",
+			Source:    "file",
+		},
+	})
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv: []string{
+			"SUB_SECRETS_PATH=" + storePath,
+			"SUB_SECRET_BINDINGS=" + secretBindings,
+		},
+		RequireEnv: []string{envVar},
+	})
 
 	// Tool simulates using an injected secret
 	h.AddTool("api_call", "Make an API call", func(args map[string]any) (string, error) {
@@ -40,9 +63,6 @@ func TestSEC001_SecretInjectionAgentNeverSeesSecrets(t *testing.T) {
 	defer h.Stop()
 
 	h.Initialize()
-
-	// Known secret value (would be configured in secret bindings)
-	secretValue := "sk-secret-api-key-xyz123"
 
 	// Execute: Call tool that uses secret
 	resp, err := h.CallTool("api_call", map[string]any{
@@ -66,13 +86,13 @@ func TestSEC001_SecretInjectionAgentNeverSeesSecrets(t *testing.T) {
 		// Check args_preview doesn't contain secret
 		argsPreview := testharness.GetString(evt, "call.preview.args_preview")
 		if strings.Contains(argsPreview, secretValue) {
-			t.Errorf("SEC-001 FAILED: args_preview contains secret value!\n"+
+			t.Errorf("SEC-001 FAILED: args_preview contains secret value!\n" +
 				"  Per Interface-Pack §4, agent must NEVER see secrets")
 		}
 
 		// Check entire event doesn't contain secret
 		if strings.Contains(evt.Raw, secretValue) {
-			t.Errorf("SEC-001 FAILED: Event contains secret value!\n"+
+			t.Errorf("SEC-001 FAILED: Event contains secret value!\n" +
 				"  Per Interface-Pack §4, secrets must NEVER appear in events")
 		}
 	}
@@ -99,7 +119,27 @@ func TestSEC002_SecretInjectionEventMetadataOnly(t *testing.T) {
 
 	// Note: This test requires secret_injection events to be enabled
 
-	h := newShimHarness()
+	secretValue := "sk-secret-key-12345"
+	storePath := writeSecretStore(t, secret.Store{
+		"service_token": secret.NewEntry(secretValue, "file"),
+	})
+	envVar := "SUBLUMINAL_TEST_SERVICE_TOKEN"
+	secretBindings := makeSecretBindingsJSON(t, "test", []secret.Binding{
+		{
+			InjectAs:  envVar,
+			SecretRef: "service_token",
+			Source:    "file",
+		},
+	})
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv: []string{
+			"SUB_SECRETS_PATH=" + storePath,
+			"SUB_SECRET_BINDINGS=" + secretBindings,
+		},
+		RequireEnv: []string{envVar},
+	})
 	h.AddTool("secret_tool", "A tool using secrets", nil)
 
 	if err := h.Start(); err != nil {
@@ -113,12 +153,12 @@ func TestSEC002_SecretInjectionEventMetadataOnly(t *testing.T) {
 	// Look for secret_injection event
 	injectionEvents := h.EventSink.ByType("secret_injection")
 	if len(injectionEvents) == 0 {
-		t.Skip("SEC-002: No secret_injection events emitted (feature may not be enabled)")
+		t.Fatal("SEC-002 FAILED: expected secret_injection events")
 	}
 
 	// Known secret values that must NOT appear
 	knownSecrets := []string{
-		"sk-secret-key-12345",
+		secretValue,
 		"ghp_github_token_abc",
 	}
 
@@ -132,10 +172,14 @@ func TestSEC002_SecretInjectionEventMetadataOnly(t *testing.T) {
 			}
 		}
 
+		if !testharness.GetBool(evt, "success") {
+			t.Errorf("SEC-002 FAILED: secret_injection event expected success=true")
+		}
+
 		// Assert: No actual secret values present
 		for _, secret := range knownSecrets {
 			if strings.Contains(evt.Raw, secret) {
-				t.Errorf("SEC-002 FAILED: secret_injection event contains actual secret value!\n"+
+				t.Errorf("SEC-002 FAILED: secret_injection event contains actual secret value!\n" +
 					"  Per Interface-Pack §4, only metadata allowed, no values")
 			}
 		}
@@ -146,4 +190,26 @@ func TestSEC002_SecretInjectionEventMetadataOnly(t *testing.T) {
 				"  Per Interface-Pack §4, only metadata, never values")
 		}
 	}
+}
+
+func writeSecretStore(t *testing.T, store secret.Store) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := secret.SaveStore(path, store); err != nil {
+		t.Fatalf("Failed to write secret store: %v", err)
+	}
+	return path
+}
+
+func makeSecretBindingsJSON(t *testing.T, serverName string, bindings []secret.Binding) string {
+	t.Helper()
+	payload := secret.ServerBindings{
+		ServerName:     serverName,
+		SecretBindings: bindings,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Failed to marshal secret bindings: %v", err)
+	}
+	return string(data)
 }

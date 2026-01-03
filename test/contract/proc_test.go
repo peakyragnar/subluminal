@@ -199,4 +199,3 @@ func processExists(pid int) bool {
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
 }
-

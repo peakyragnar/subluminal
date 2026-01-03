@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"sync"
 )
 
@@ -37,18 +39,18 @@ type JSONRPCRequest struct {
 // JSONRPCResponse is our response back to the agent/shim.
 // Example: {"jsonrpc":"2.0","id":1,"result":{...}}
 type JSONRPCResponse struct {
-	JSONRPC string           `json:"jsonrpc"`         // Always "2.0"
-	ID      any              `json:"id"`              // Matches request ID
-	Result  any              `json:"result,omitempty"` // Success payload
-	Error   *JSONRPCError    `json:"error,omitempty"`  // Error payload (mutually exclusive with Result)
+	JSONRPC string        `json:"jsonrpc"`          // Always "2.0"
+	ID      any           `json:"id"`               // Matches request ID
+	Result  any           `json:"result,omitempty"` // Success payload
+	Error   *JSONRPCError `json:"error,omitempty"`  // Error payload (mutually exclusive with Result)
 }
 
 // JSONRPCError is the error object when something goes wrong.
 // Example: {"code":-32601,"message":"Method not found"}
 type JSONRPCError struct {
-	Code    int    `json:"code"`              // Error code (negative numbers)
-	Message string `json:"message"`           // Human-readable message
-	Data    any    `json:"data,omitempty"`    // Optional additional data
+	Code    int    `json:"code"`           // Error code (negative numbers)
+	Message string `json:"message"`        // Human-readable message
+	Data    any    `json:"data,omitempty"` // Optional additional data
 }
 
 // =============================================================================
@@ -106,6 +108,9 @@ type FakeMCPServer struct {
 
 	// calls records all tool calls received (for assertions).
 	calls []ToolCallParams
+
+	// RequireEnv lists env vars that must be present for calls to succeed.
+	RequireEnv []string
 }
 
 // NewFakeMCPServer creates a new fake server with no tools.
@@ -228,6 +233,17 @@ func (s *FakeMCPServer) handleToolsList(req *JSONRPCRequest) *JSONRPCResponse {
 
 // handleToolsCall executes a tool and returns the result.
 func (s *FakeMCPServer) handleToolsCall(req *JSONRPCRequest) *JSONRPCResponse {
+	if missing := missingEnv(s.RequireEnv); len(missing) > 0 {
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &JSONRPCError{
+				Code:    -32002,
+				Message: fmt.Sprintf("missing required env vars: %s", strings.Join(missing, ",")),
+			},
+		}
+	}
+
 	// Parse the call params
 	var params ToolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -280,6 +296,22 @@ func (s *FakeMCPServer) handleToolsCall(req *JSONRPCRequest) *JSONRPCResponse {
 			},
 		},
 	}
+}
+
+func missingEnv(required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	var missing []string
+	for _, name := range required {
+		if name == "" {
+			continue
+		}
+		if value, ok := os.LookupEnv(name); !ok || value == "" {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 // writeError is a helper to write an error response.
