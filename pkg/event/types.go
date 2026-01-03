@@ -60,17 +60,23 @@ type Source struct {
 	ShimID string `json:"shim_id"` // Unique per shim instance
 }
 
+// Workload contains optional workload context for a run.
+// Per Interface-Pack §1.3.1
+type Workload map[string]any
+
 // Envelope contains the required fields for every event.
 // Per Interface-Pack §1.3
 type Envelope struct {
-	V       string    `json:"v"`        // Interface pack version, e.g. "0.1.0"
-	Type    EventType `json:"type"`     // Event type
-	TS      string    `json:"ts"`       // RFC3339 timestamp in UTC
-	RunID   string    `json:"run_id"`   // Globally unique run identifier
-	AgentID string    `json:"agent_id"` // Agent identifier
-	Client  Client    `json:"client"`   // Client type
-	Env     Env       `json:"env"`      // Execution environment
-	Source  Source    `json:"source"`   // Producer instance info
+	V         string    `json:"v"`                   // Interface pack version, e.g. "0.1.0"
+	Type      EventType `json:"type"`                // Event type
+	TS        string    `json:"ts"`                  // RFC3339 timestamp in UTC
+	RunID     string    `json:"run_id"`              // Globally unique run identifier
+	AgentID   string    `json:"agent_id"`            // Agent identifier
+	Client    Client    `json:"client"`              // Client type
+	Env       Env       `json:"env"`                 // Execution environment
+	Principal string    `json:"principal,omitempty"` // Who initiated the run
+	Workload  Workload  `json:"workload,omitempty"`  // Optional workload context
+	Source    Source    `json:"source"`              // Producer instance info
 }
 
 // Preview contains truncated previews of args/results.

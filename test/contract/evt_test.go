@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
@@ -260,7 +261,13 @@ func TestEVT005_CallIDUniquenessPerRun(t *testing.T) {
 		h.CallTool("test_tool", map[string]any{"iteration": i})
 	}
 
+	waitForEventCount(t, h.EventSink, "tool_call_start", 100, time.Second)
+
 	// Get all tool_call_start events
+	if !h.EventSink.WaitForTypeCount("tool_call_start", 100, 2*time.Second) {
+		toolCallStarts := h.EventSink.ByType("tool_call_start")
+		t.Fatalf("EVT-005 FAILED: Expected 100 tool_call_start events, got %d", len(toolCallStarts))
+	}
 	toolCallStarts := h.EventSink.ByType("tool_call_start")
 	if len(toolCallStarts) != 100 {
 		t.Fatalf("EVT-005 FAILED: Expected 100 tool_call_start events, got %d", len(toolCallStarts))
@@ -289,6 +296,26 @@ func TestEVT005_CallIDUniquenessPerRun(t *testing.T) {
 			t.Errorf("EVT-005 FAILED: Event %d has seq=%d, expected %d\n"+
 				"  Per Interface-Pack §1.5, seq must be monotonic starting at 1",
 				evt.Index, seq, expectedSeq)
+		}
+	}
+}
+
+func waitForEventCount(t *testing.T, sink *testharness.EventSink, eventType string, want int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		count := len(sink.ByType(eventType))
+		if count >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected %d %s events within %s, got %d", want, eventType, timeout, count)
+		case <-ticker.C:
 		}
 	}
 }

@@ -42,11 +42,12 @@ type Proxy struct {
 	state *core.RunState
 
 	// Identity
-	identity   core.Identity
-	source     core.Source
-	serverName string
-	policy     policy.Bundle
-	redactor   *Redactor
+	identity     core.Identity
+	source       core.Source
+	serverName   string
+	policy       policy.Bundle
+	policyTarget policy.SelectorTarget
+	redactor     *Redactor
 
 	// Secret injection metadata
 	secretEvents []secret.InjectionEvent
@@ -88,6 +89,11 @@ func NewProxy(
 	if redactor == nil {
 		redactor = NewRedactor(nil)
 	}
+	policyTarget := policy.SelectorTarget{
+		Env:     string(identity.Env),
+		AgentID: identity.AgentID,
+		Client:  string(identity.Client),
+	}
 	return &Proxy{
 		upstream:     upstream,
 		emitter:      emitter,
@@ -96,6 +102,7 @@ func NewProxy(
 		source:       source,
 		serverName:   serverName,
 		policy:       policyBundle,
+		policyTarget: policyTarget,
 		redactor:     redactor,
 		secretEvents: append([]secret.InjectionEvent{}, secretEvents...),
 		agentIn:      agentIn,
@@ -208,7 +215,13 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Start tracking
 	callState := p.state.StartCall(callID)
 
-	policyDecision := p.policy.Decide(p.serverName, toolName, argsHash)
+	policyDecision := p.policy.DecideWithContext(policy.DecisionContext{
+		ServerName: p.serverName,
+		ToolName:   toolName,
+		ArgsHash:   argsHash,
+		Args:       args,
+		Target:     p.policyTarget,
+	})
 	decisionSummary := p.redactor.Redact(policyDecision.Summary)
 	decision := event.Decision{
 		Action:   policyDecision.Action,
@@ -381,14 +394,16 @@ func (p *Proxy) forwardToAgent(data []byte) {
 
 func (p *Proxy) makeEnvelope(eventType event.EventType) event.Envelope {
 	return event.Envelope{
-		V:       core.InterfaceVersion,
-		Type:    eventType,
-		TS:      time.Now().UTC().Format(time.RFC3339Nano),
-		RunID:   p.identity.RunID,
-		AgentID: p.identity.AgentID,
-		Client:  p.identity.Client,
-		Env:     p.identity.Env,
-		Source:  p.source.ToEventSource(),
+		V:         core.InterfaceVersion,
+		Type:      eventType,
+		TS:        time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:     p.identity.RunID,
+		AgentID:   p.identity.AgentID,
+		Principal: p.identity.Principal,
+		Workload:  p.identity.Workload,
+		Client:    p.identity.Client,
+		Env:       p.identity.Env,
+		Source:    p.source.ToEventSource(),
 	}
 }
 

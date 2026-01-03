@@ -66,7 +66,6 @@ func TestPOL001_ObserveModeNeverBlocks(t *testing.T) {
 			"  Error: %s", wrapped.ErrorMessage())
 	}
 
-	waitForEventCount(t, h.EventSink, "tool_call_decision", 1)
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) == 0 {
 		t.Fatal("POL-001 FAILED: No tool_call_decision events")
@@ -152,11 +151,12 @@ func TestPOL002_AllowDenyOrdering(t *testing.T) {
 	}
 
 	// Assert: Decision shows BLOCK with correct rule_id
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
-		t.Fatal("POL-002 FAILED: No tool_call_decision events")
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 1, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
+		t.Fatalf("POL-002 FAILED: Expected decision event, got %d", len(decisions))
 	}
 
+	decisions := h.EventSink.ByType("tool_call_decision")
 	evt := decisions[0]
 	action := testharness.GetString(evt, "decision.action")
 	if action != "BLOCK" {
@@ -245,29 +245,22 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 		t.Error("POL-003 FAILED: Call 4 should have been blocked (exceeded budget)")
 	}
 
-	waitForEventCount(t, h.EventSink, "tool_call_decision", 4)
-	// Assert: Decision cites budget rule
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) < 4 {
-		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
+	// Ensure all events are captured before inspecting decisions.
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Failed to stop harness: %v", err)
 	}
 
+	// Assert: Decision cites budget rule
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 4, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
+		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
+	}
+	decisions := h.EventSink.ByType("tool_call_decision")
 	lastDecision := decisions[3]
 	action := testharness.GetString(lastDecision, "decision.action")
 	allowedActions := map[string]bool{"BLOCK": true, "REJECT_WITH_HINT": true, "TERMINATE_RUN": true}
 	if !allowedActions[action] {
 		t.Errorf("POL-003 FAILED: 4th call decision was %q, expected BLOCK/REJECT_WITH_HINT/TERMINATE_RUN", action)
-	}
-}
-
-func waitForEventCount(t *testing.T, sink *testharness.EventSink, eventType string, count int) {
-	t.Helper()
-	deadline := time.Now().Add(250 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if len(sink.ByType(eventType)) >= count {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -618,11 +611,11 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	}
 
 	// If blocked, verify it was due to risk_class matching
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
+	decisionEvt, err := waitForEventType(h.EventSink, "tool_call_decision", 500*time.Millisecond)
+	if err != nil {
 		t.Fatal("POL-007 FAILED: No decisions captured")
 	}
-	ruleID := testharness.GetString(decisions[0], "decision.rule_id")
+	ruleID := testharness.GetString(*decisionEvt, "decision.rule_id")
 	if ruleID != "deny-write-like" {
 		t.Errorf("POL-007 FAILED: decision.rule_id=%q, expected deny-write-like", ruleID)
 	}
@@ -702,5 +695,164 @@ func TestPOL008_BytesOutCorrectForBlockedResponses(t *testing.T) {
 	if bytesOut < minExpectedSize {
 		t.Errorf("POL-008 FAILED: bytes_out=%d seems too small for a JSON-RPC error response\n"+
 			"  Expected at least %d bytes", bytesOut, minExpectedSize)
+	}
+}
+
+// =============================================================================
+// POL-009: Policy Selectors Gate Enforcement
+// Contract: Policy applies only when selectors match identity envelope.
+// Reference: Interface-Pack.md §2.2
+// =============================================================================
+
+func TestPOL009_PolicySelectorsGateEnforcement(t *testing.T) {
+	skipIfNoShim(t)
+
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-009",
+		"policy_version": "1.0.0",
+		"selectors": {
+			"env": ["ci"],
+			"agent_id": ["selector-agent"]
+		},
+		"rules": [
+			{
+				"rule_id": "deny-selector-tool",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["selector_tool"]}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "SELECTOR_BLOCK",
+					"message": "Blocked by selector"
+				}
+			}
+		]
+	}`
+
+	hNoMatch := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv: []string{
+			"SUB_ENV=dev",
+			"SUB_AGENT_ID=selector-agent",
+			"SUB_POLICY_JSON=" + policyJSON,
+		},
+	})
+	hNoMatch.AddTool("selector_tool", "A tool gated by selectors", nil)
+
+	if err := hNoMatch.Start(); err != nil {
+		t.Fatalf("Failed to start harness (no match): %v", err)
+	}
+	hNoMatch.Initialize()
+
+	respNoMatch, err := hNoMatch.CallTool("selector_tool", nil)
+	if err != nil {
+		t.Fatalf("Failed to call tool (no match): %v", err)
+	}
+	hNoMatch.Stop()
+
+	if !testharness.WrapResponse(respNoMatch).IsSuccess() {
+		t.Error("POL-009 FAILED: Tool should be allowed when selectors do not match")
+	}
+
+	hMatch := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv: []string{
+			"SUB_ENV=ci",
+			"SUB_AGENT_ID=selector-agent",
+			"SUB_POLICY_JSON=" + policyJSON,
+		},
+	})
+	hMatch.AddTool("selector_tool", "A tool gated by selectors", nil)
+
+	if err := hMatch.Start(); err != nil {
+		t.Fatalf("Failed to start harness (match): %v", err)
+	}
+	defer hMatch.Stop()
+
+	hMatch.Initialize()
+	respMatch, err := hMatch.CallTool("selector_tool", nil)
+	if err != nil {
+		t.Fatalf("Failed to call tool (match): %v", err)
+	}
+
+	if testharness.WrapResponse(respMatch).IsSuccess() {
+		t.Error("POL-009 FAILED: Tool should be blocked when selectors match")
+	}
+}
+
+// =============================================================================
+// POL-010: Argument Predicates Match
+// Contract: Rule args predicates (has_keys, key_equals, key_in, numeric_range)
+//           apply to tool call arguments.
+// Reference: Interface-Pack.md §2.4
+// =============================================================================
+
+func TestPOL010_ArgumentPredicatesMatch(t *testing.T) {
+	skipIfNoShim(t)
+
+	policyJSON := `{
+		"mode": "guardrails",
+		"policy_id": "test-pol-010",
+		"policy_version": "1.0.0",
+		"rules": [
+			{
+				"rule_id": "deny-delete-high",
+				"kind": "deny",
+				"match": {
+					"tool_name": {"glob": ["mutable_tool"]},
+					"args": {
+						"has_keys": ["action", "priority", "count"],
+						"key_equals": {"action": "delete"},
+						"key_in": {"priority": ["high", "critical"]},
+						"numeric_range": {"count": {"min": 1, "max": 3}}
+					}
+				},
+				"effect": {
+					"action": "BLOCK",
+					"reason_code": "ARGS_MATCH",
+					"message": "Blocked by args predicates"
+				}
+			}
+		]
+	}`
+
+	h := testharness.NewTestHarness(testharness.HarnessConfig{
+		ShimPath: shimPath,
+		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+	})
+	h.AddTool("mutable_tool", "A tool with args predicates", nil)
+
+	if err := h.Start(); err != nil {
+		t.Fatalf("Failed to start harness: %v", err)
+	}
+	defer h.Stop()
+
+	h.Initialize()
+
+	respAllow, err := h.CallTool("mutable_tool", map[string]any{
+		"action":   "delete",
+		"priority": "low",
+		"count":    2,
+	})
+	if err != nil {
+		t.Fatalf("Failed to call tool (allow): %v", err)
+	}
+
+	respBlock, err := h.CallTool("mutable_tool", map[string]any{
+		"action":   "delete",
+		"priority": "high",
+		"count":    2,
+	})
+	if err != nil {
+		t.Fatalf("Failed to call tool (block): %v", err)
+	}
+
+	if !testharness.WrapResponse(respAllow).IsSuccess() {
+		t.Error("POL-010 FAILED: Call should be allowed when args predicates do not match")
+	}
+	if testharness.WrapResponse(respBlock).IsSuccess() {
+		t.Error("POL-010 FAILED: Call should be blocked when args predicates match")
 	}
 }
