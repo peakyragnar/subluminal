@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
@@ -261,6 +262,10 @@ func TestEVT005_CallIDUniquenessPerRun(t *testing.T) {
 	}
 
 	// Get all tool_call_start events
+	if !h.EventSink.WaitForTypeCount("tool_call_start", 100, 2*time.Second) {
+		toolCallStarts := h.EventSink.ByType("tool_call_start")
+		t.Fatalf("EVT-005 FAILED: Expected 100 tool_call_start events, got %d", len(toolCallStarts))
+	}
 	toolCallStarts := h.EventSink.ByType("tool_call_start")
 	if len(toolCallStarts) != 100 {
 		t.Fatalf("EVT-005 FAILED: Expected 100 tool_call_start events, got %d", len(toolCallStarts))

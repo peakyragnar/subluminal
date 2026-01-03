@@ -151,11 +151,12 @@ func TestPOL002_AllowDenyOrdering(t *testing.T) {
 	}
 
 	// Assert: Decision shows BLOCK with correct rule_id
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
-		t.Fatal("POL-002 FAILED: No tool_call_decision events")
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 1, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
+		t.Fatalf("POL-002 FAILED: Expected decision event, got %d", len(decisions))
 	}
 
+	decisions := h.EventSink.ByType("tool_call_decision")
 	evt := decisions[0]
 	action := testharness.GetString(evt, "decision.action")
 	if action != "BLOCK" {
@@ -250,14 +251,11 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 	}
 
 	// Assert: Decision cites budget rule
-	if err := h.Stop(); err != nil {
-		t.Fatalf("POL-003 FAILED: harness stop error: %v", err)
-	}
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) < 4 {
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 4, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
 		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
 	}
-
+	decisions := h.EventSink.ByType("tool_call_decision")
 	lastDecision := decisions[3]
 	action := testharness.GetString(lastDecision, "decision.action")
 	allowedActions := map[string]bool{"BLOCK": true, "REJECT_WITH_HINT": true, "TERMINATE_RUN": true}

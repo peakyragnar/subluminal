@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // =============================================================================
@@ -133,6 +134,48 @@ func (s *EventSink) ByType(eventType string) []CapturedEvent {
 		}
 	}
 	return result
+}
+
+// WaitForCount waits until the total event count reaches the target or timeout.
+func (s *EventSink) WaitForCount(count int, timeout time.Duration) bool {
+	if count <= 0 {
+		return true
+	}
+	if timeout <= 0 {
+		return s.Count() >= count
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if s.Count() >= count {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// WaitForTypeCount waits until the event type count reaches the target or timeout.
+func (s *EventSink) WaitForTypeCount(eventType string, count int, timeout time.Duration) bool {
+	if count <= 0 {
+		return true
+	}
+	if timeout <= 0 {
+		return len(s.ByType(eventType)) >= count
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(s.ByType(eventType)) >= count {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // First returns the first event, or nil if none.
