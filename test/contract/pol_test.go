@@ -151,11 +151,12 @@ func TestPOL002_AllowDenyOrdering(t *testing.T) {
 	}
 
 	// Assert: Decision shows BLOCK with correct rule_id
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
-		t.Fatal("POL-002 FAILED: No tool_call_decision events")
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 1, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
+		t.Fatalf("POL-002 FAILED: Expected decision event, got %d", len(decisions))
 	}
 
+	decisions := h.EventSink.ByType("tool_call_decision")
 	evt := decisions[0]
 	action := testharness.GetString(evt, "decision.action")
 	if action != "BLOCK" {

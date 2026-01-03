@@ -70,30 +70,43 @@ func runTail(args []string) int {
 	defer ticker.Stop()
 
 	for {
-		paged := filters
-		paged.AfterCreatedAt = lastCreatedAt
-		paged.AfterCallID = lastCallID
-
-		rows, err := tailToolCalls(dbPath, paged, *limitFlag)
+		recentRows, err := tailToolCallWindow(dbPath, filters, *limitFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 
-		for _, row := range rows {
-			fingerprint := row.fingerprint()
-			if !first {
-				if prev, ok := seen[row.CallID]; ok && prev == fingerprint {
-					continue
+		rowsToPrint := applyToolCallRows(recentRows, seen, first)
+
+		if !first {
+			paged := filters
+			paged.AfterCreatedAt = lastCreatedAt
+			paged.AfterCallID = lastCallID
+			newRows, err := tailToolCalls(dbPath, paged, *limitFlag)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			rowsToPrint = append(rowsToPrint, applyToolCallRows(newRows, seen, false)...)
+			if len(newRows) > 0 {
+				lastRow := newRows[len(newRows)-1]
+				if isAfterCursor(lastCreatedAt, lastCallID, lastRow) {
+					lastCreatedAt = lastRow.CreatedAt
+					lastCallID = lastRow.CallID
 				}
 			}
-			fmt.Fprintln(os.Stdout, row.format())
-			seen[row.CallID] = fingerprint
 		}
-		if len(rows) > 0 {
-			lastRow := rows[len(rows)-1]
-			lastCreatedAt = lastRow.CreatedAt
-			lastCallID = lastRow.CallID
+
+		if len(recentRows) > 0 {
+			lastRow := recentRows[len(recentRows)-1]
+			if isAfterCursor(lastCreatedAt, lastCallID, lastRow) {
+				lastCreatedAt = lastRow.CreatedAt
+				lastCallID = lastRow.CallID
+			}
+		}
+
+		for _, row := range rowsToPrint {
+			fmt.Fprintln(os.Stdout, row.format())
 		}
 		first = false
 
@@ -113,4 +126,43 @@ func tailToolCalls(dbPath string, filters toolCallFilters, limit int) ([]toolCal
 		return nil, err
 	}
 	return parseToolCallRows(output)
+}
+
+func tailToolCallWindow(dbPath string, filters toolCallFilters, limit int) ([]toolCallRow, error) {
+	query := buildToolCallQuery(toolCallColumns, filters, true, limit)
+	query = fmt.Sprintf("SELECT * FROM (%s) ORDER BY created_at ASC, call_id ASC", query)
+
+	output, err := runSQLiteQuery(dbPath, query)
+	if err != nil {
+		return nil, err
+	}
+	return parseToolCallRows(output)
+}
+
+func applyToolCallRows(rows []toolCallRow, seen map[string]string, first bool) []toolCallRow {
+	out := make([]toolCallRow, 0, len(rows))
+	for _, row := range rows {
+		fingerprint := row.fingerprint()
+		if !first {
+			if prev, ok := seen[row.CallID]; ok && prev == fingerprint {
+				continue
+			}
+		}
+		out = append(out, row)
+		seen[row.CallID] = fingerprint
+	}
+	return out
+}
+
+func isAfterCursor(lastCreatedAt, lastCallID string, row toolCallRow) bool {
+	if lastCreatedAt == "" {
+		return true
+	}
+	if row.CreatedAt > lastCreatedAt {
+		return true
+	}
+	if row.CreatedAt == lastCreatedAt && row.CallID > lastCallID {
+		return true
+	}
+	return false
 }

@@ -41,6 +41,7 @@ func runDoctor(args []string) int {
 	if info, err := os.Stat(dbPath); err != nil {
 		if os.IsNotExist(err) {
 			fmt.Fprintf(os.Stdout, "ledger db: %s (missing)\n", dbPath)
+			ok = false
 		} else {
 			fmt.Fprintf(os.Stdout, "ledger db: %s (error: %v)\n", dbPath, err)
 			ok = false
