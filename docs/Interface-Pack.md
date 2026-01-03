@@ -91,7 +91,7 @@ Events SHOULD include:
 	•	pod (string)
 	•	labels (object<string,string>)
 
-Consumers MUST tolerate missing workload.
+Consumers MUST tolerate missing principal/workload.
 
 ⸻
 
@@ -528,6 +528,7 @@ To standardize identity across tools, sub run and headless runners SHOULD set:
 	•	SUB_ENV (dev|ci|prod)
 	•	SUB_CLIENT (claude|codex|headless|custom)
 	•	SUB_PRINCIPAL (optional)
+	•	SUB_WORKLOAD (optional JSON object)
 
 Shims MUST read these if present and stamp events accordingly.
 

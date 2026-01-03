@@ -21,6 +21,8 @@
 //	SUB_AGENT_ID   - Agent identifier (defaults to "unknown")
 //	SUB_CLIENT     - Client type: claude|codex|headless|custom|unknown
 //	SUB_ENV        - Environment: dev|ci|prod|unknown
+//	SUB_PRINCIPAL  - Optional principal identity (user/service)
+//	SUB_WORKLOAD   - Optional JSON object describing workload context
 package main
 
 import (
