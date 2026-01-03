@@ -66,3 +66,43 @@ func TestApplyToolCallRowsEmitsUpdates(t *testing.T) {
 		t.Fatalf("unexpected updated row values: decision=%s status=%s", second[0].Decision, second[0].Status)
 	}
 }
+
+func TestFetchNewToolCallsPaginates(t *testing.T) {
+	rows := []toolCallRow{
+		{CallID: "call-1", CreatedAt: "2024-01-01T00:00:01Z"},
+		{CallID: "call-2", CreatedAt: "2024-01-01T00:00:02Z"},
+		{CallID: "call-3", CreatedAt: "2024-01-01T00:00:03Z"},
+		{CallID: "call-4", CreatedAt: "2024-01-01T00:00:04Z"},
+		{CallID: "call-5", CreatedAt: "2024-01-01T00:00:05Z"},
+	}
+
+	fetch := func(filters toolCallFilters, limit int) ([]toolCallRow, error) {
+		filtered := make([]toolCallRow, 0, len(rows))
+		for _, row := range rows {
+			if filters.AfterCreatedAt != "" {
+				if row.CreatedAt < filters.AfterCreatedAt {
+					continue
+				}
+				if row.CreatedAt == filters.AfterCreatedAt && row.CallID <= filters.AfterCallID {
+					continue
+				}
+			}
+			filtered = append(filtered, row)
+		}
+		if limit > 0 && len(filtered) > limit {
+			filtered = filtered[:limit]
+		}
+		return filtered, nil
+	}
+
+	out, lastCreatedAt, lastCallID, err := fetchNewToolCalls(toolCallFilters{}, 2, "", "", fetch)
+	if err != nil {
+		t.Fatalf("unexpected fetch error: %v", err)
+	}
+	if len(out) != len(rows) {
+		t.Fatalf("expected %d rows, got %d", len(rows), len(out))
+	}
+	if lastCreatedAt != rows[len(rows)-1].CreatedAt || lastCallID != rows[len(rows)-1].CallID {
+		t.Fatalf("unexpected cursor: %s/%s", lastCreatedAt, lastCallID)
+	}
+}

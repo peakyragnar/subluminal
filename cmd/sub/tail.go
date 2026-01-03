@@ -78,31 +78,23 @@ func runTail(args []string) int {
 
 		rowsToPrint := applyToolCallRows(recentRows, seen, first)
 
-		if !first {
-			paged := filters
-			paged.AfterCreatedAt = lastCreatedAt
-			paged.AfterCallID = lastCallID
-			newRows, err := tailToolCalls(dbPath, paged, *limitFlag)
+		if first {
+			if len(recentRows) > 0 {
+				lastRow := recentRows[len(recentRows)-1]
+				lastCreatedAt = lastRow.CreatedAt
+				lastCallID = lastRow.CallID
+			}
+		} else {
+			newRows, newCreatedAt, newCallID, err := fetchNewToolCalls(filters, *limitFlag, lastCreatedAt, lastCallID, func(paged toolCallFilters, limit int) ([]toolCallRow, error) {
+				return tailToolCalls(dbPath, paged, limit)
+			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 1
 			}
 			rowsToPrint = append(rowsToPrint, applyToolCallRows(newRows, seen, false)...)
-			if len(newRows) > 0 {
-				lastRow := newRows[len(newRows)-1]
-				if isAfterCursor(lastCreatedAt, lastCallID, lastRow) {
-					lastCreatedAt = lastRow.CreatedAt
-					lastCallID = lastRow.CallID
-				}
-			}
-		}
-
-		if len(recentRows) > 0 {
-			lastRow := recentRows[len(recentRows)-1]
-			if isAfterCursor(lastCreatedAt, lastCallID, lastRow) {
-				lastCreatedAt = lastRow.CreatedAt
-				lastCallID = lastRow.CallID
-			}
+			lastCreatedAt = newCreatedAt
+			lastCallID = newCallID
 		}
 
 		for _, row := range rowsToPrint {
@@ -137,6 +129,37 @@ func tailToolCallWindow(dbPath string, filters toolCallFilters, limit int) ([]to
 		return nil, err
 	}
 	return parseToolCallRows(output)
+}
+
+func fetchNewToolCalls(filters toolCallFilters, limit int, lastCreatedAt, lastCallID string, fetch func(toolCallFilters, int) ([]toolCallRow, error)) ([]toolCallRow, string, string, error) {
+	cursorCreatedAt := lastCreatedAt
+	cursorCallID := lastCallID
+	out := []toolCallRow{}
+
+	for {
+		paged := filters
+		paged.AfterCreatedAt = cursorCreatedAt
+		paged.AfterCallID = cursorCallID
+		rows, err := fetch(paged, limit)
+		if err != nil {
+			return nil, cursorCreatedAt, cursorCallID, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		out = append(out, rows...)
+		lastRow := rows[len(rows)-1]
+		if !isAfterCursor(cursorCreatedAt, cursorCallID, lastRow) {
+			break
+		}
+		cursorCreatedAt = lastRow.CreatedAt
+		cursorCallID = lastRow.CallID
+		if limit <= 0 || len(rows) < limit {
+			break
+		}
+	}
+
+	return out, cursorCreatedAt, cursorCallID, nil
 }
 
 func applyToolCallRows(rows []toolCallRow, seen map[string]string, first bool) []toolCallRow {
