@@ -381,14 +381,16 @@ func (p *Proxy) forwardToAgent(data []byte) {
 
 func (p *Proxy) makeEnvelope(eventType event.EventType) event.Envelope {
 	return event.Envelope{
-		V:       core.InterfaceVersion,
-		Type:    eventType,
-		TS:      time.Now().UTC().Format(time.RFC3339Nano),
-		RunID:   p.identity.RunID,
-		AgentID: p.identity.AgentID,
-		Client:  p.identity.Client,
-		Env:     p.identity.Env,
-		Source:  p.source.ToEventSource(),
+		V:         core.InterfaceVersion,
+		Type:      eventType,
+		TS:        time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:     p.identity.RunID,
+		AgentID:   p.identity.AgentID,
+		Principal: p.identity.Principal,
+		Workload:  p.identity.Workload,
+		Client:    p.identity.Client,
+		Env:       p.identity.Env,
+		Source:    p.source.ToEventSource(),
 	}
 }
 
