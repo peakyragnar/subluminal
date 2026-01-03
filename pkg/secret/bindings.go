@@ -52,17 +52,25 @@ func ParseBindings(raw []byte, serverName string) ([]Binding, error) {
 
 	switch root.(type) {
 	case []any:
-		if bindings, ok := parseServerBindingsArray(raw, serverName); ok {
+		if bindings, ok, err := parseServerBindingsArray(raw, serverName); err != nil {
+			return nil, err
+		} else if ok {
 			return bindings, nil
 		}
-		if bindings, ok := parseBindingsArray(raw); ok {
+		if bindings, ok, err := parseBindingsArray(raw); err != nil {
+			return nil, err
+		} else if ok {
 			return bindings, nil
 		}
 	case map[string]any:
-		if bindings, ok := parseServerBindingsObject(raw, serverName); ok {
+		if bindings, ok, err := parseServerBindingsObject(raw, serverName); err != nil {
+			return nil, err
+		} else if ok {
 			return bindings, nil
 		}
-		if bindings, ok := parseBindingsMap(raw, serverName); ok {
+		if bindings, ok, err := parseBindingsMap(raw, serverName); err != nil {
+			return nil, err
+		} else if ok {
 			return bindings, nil
 		}
 	}
@@ -70,51 +78,63 @@ func ParseBindings(raw []byte, serverName string) ([]Binding, error) {
 	return nil, errors.New("invalid secret bindings config")
 }
 
-func parseServerBindingsArray(raw []byte, serverName string) ([]Binding, bool) {
+func parseServerBindingsArray(raw []byte, serverName string) ([]Binding, bool, error) {
 	var configs []ServerBindings
 	if err := json.Unmarshal(raw, &configs); err != nil || !hasServerBindings(configs) {
-		return nil, false
+		return nil, false, nil
 	}
 	for _, cfg := range configs {
 		if cfg.ServerName == "" || cfg.ServerName == serverName {
-			normalized, _ := normalizeBindings(cfg.SecretBindings)
-			return normalized, true
+			normalized, err := normalizeBindings(cfg.SecretBindings)
+			if err != nil {
+				return nil, true, err
+			}
+			return normalized, true, nil
 		}
 	}
-	return nil, true
+	return nil, true, nil
 }
 
-func parseServerBindingsObject(raw []byte, serverName string) ([]Binding, bool) {
+func parseServerBindingsObject(raw []byte, serverName string) ([]Binding, bool, error) {
 	var cfg ServerBindings
 	if err := json.Unmarshal(raw, &cfg); err != nil || len(cfg.SecretBindings) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	if cfg.ServerName != "" && cfg.ServerName != serverName {
-		return nil, true
+		return nil, true, nil
 	}
-	normalized, _ := normalizeBindings(cfg.SecretBindings)
-	return normalized, true
+	normalized, err := normalizeBindings(cfg.SecretBindings)
+	if err != nil {
+		return nil, true, err
+	}
+	return normalized, true, nil
 }
 
-func parseBindingsMap(raw []byte, serverName string) ([]Binding, bool) {
+func parseBindingsMap(raw []byte, serverName string) ([]Binding, bool, error) {
 	var byServer map[string][]Binding
 	if err := json.Unmarshal(raw, &byServer); err != nil || len(byServer) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	if bindings, ok := byServer[serverName]; ok {
-		normalized, _ := normalizeBindings(bindings)
-		return normalized, true
+		normalized, err := normalizeBindings(bindings)
+		if err != nil {
+			return nil, true, err
+		}
+		return normalized, true, nil
 	}
-	return nil, true
+	return nil, true, nil
 }
 
-func parseBindingsArray(raw []byte) ([]Binding, bool) {
+func parseBindingsArray(raw []byte) ([]Binding, bool, error) {
 	var bindings []Binding
 	if err := json.Unmarshal(raw, &bindings); err != nil || !hasBindings(bindings) {
-		return nil, false
+		return nil, false, nil
 	}
-	normalized, _ := normalizeBindings(bindings)
-	return normalized, true
+	normalized, err := normalizeBindings(bindings)
+	if err != nil {
+		return nil, true, err
+	}
+	return normalized, true, nil
 }
 
 func hasServerBindings(configs []ServerBindings) bool {
