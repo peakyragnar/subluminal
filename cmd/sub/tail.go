@@ -59,6 +59,8 @@ func runTail(args []string) int {
 
 	seen := make(map[string]string)
 	first := true
+	lastCreatedAt := ""
+	lastCallID := ""
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -68,7 +70,11 @@ func runTail(args []string) int {
 	defer ticker.Stop()
 
 	for {
-		rows, err := tailToolCalls(dbPath, filters, *limitFlag)
+		paged := filters
+		paged.AfterCreatedAt = lastCreatedAt
+		paged.AfterCallID = lastCallID
+
+		rows, err := tailToolCalls(dbPath, paged, *limitFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -84,6 +90,11 @@ func runTail(args []string) int {
 			fmt.Fprintln(os.Stdout, row.format())
 			seen[row.CallID] = fingerprint
 		}
+		if len(rows) > 0 {
+			lastRow := rows[len(rows)-1]
+			lastCreatedAt = lastRow.CreatedAt
+			lastCallID = lastRow.CallID
+		}
 		first = false
 
 		select {
@@ -95,8 +106,7 @@ func runTail(args []string) int {
 }
 
 func tailToolCalls(dbPath string, filters toolCallFilters, limit int) ([]toolCallRow, error) {
-	query := buildToolCallQuery(toolCallColumns, filters, true, limit)
-	query = fmt.Sprintf("SELECT * FROM (%s) ORDER BY created_at ASC", query)
+	query := buildToolCallQuery(toolCallColumns, filters, false, limit)
 
 	output, err := runSQLiteQuery(dbPath, query)
 	if err != nil {

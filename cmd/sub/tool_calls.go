@@ -24,11 +24,13 @@ const toolCallHeader = "ts\trun_id\tserver\ttool\tdecision\tstatus\tlatency_ms\t
 
 // toolCallFilters scopes query results for tool_calls.
 type toolCallFilters struct {
-	RunID    string
-	Server   string
-	Tool     string
-	Decision string
-	Status   string
+	RunID          string
+	Server         string
+	Tool           string
+	Decision       string
+	Status         string
+	AfterCreatedAt string
+	AfterCallID    string
 }
 
 type toolCallRow struct {
@@ -94,15 +96,26 @@ func buildToolCallQuery(columns []string, filters toolCallFilters, orderDesc boo
 	if filters.Status != "" {
 		clauses = append(clauses, "status="+sqlText(filters.Status))
 	}
+	if filters.AfterCreatedAt != "" {
+		if filters.AfterCallID != "" {
+			clauses = append(clauses, fmt.Sprintf("(created_at > %s OR (created_at = %s AND call_id > %s))",
+				sqlText(filters.AfterCreatedAt),
+				sqlText(filters.AfterCreatedAt),
+				sqlText(filters.AfterCallID),
+			))
+		} else {
+			clauses = append(clauses, "created_at > "+sqlText(filters.AfterCreatedAt))
+		}
+	}
 
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
 
 	if orderDesc {
-		query += " ORDER BY created_at DESC"
+		query += " ORDER BY created_at DESC, call_id DESC"
 	} else {
-		query += " ORDER BY created_at ASC"
+		query += " ORDER BY created_at ASC, call_id ASC"
 	}
 
 	if limit > 0 {
