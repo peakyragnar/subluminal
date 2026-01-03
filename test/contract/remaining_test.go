@@ -12,10 +12,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/subluminal/subluminal/pkg/core"
+	"github.com/subluminal/subluminal/pkg/event"
 	"github.com/subluminal/subluminal/pkg/importer"
+	"github.com/subluminal/subluminal/pkg/ledger"
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
 
@@ -39,6 +44,8 @@ func TestID001_IdentityEnvVarsApplied(t *testing.T) {
 			"SUB_AGENT_ID=test-agent-id-67890",
 			"SUB_ENV=ci",
 			"SUB_CLIENT=claude",
+			"SUB_PRINCIPAL=test-user@example.com",
+			`SUB_WORKLOAD={"repo":"subluminal","labels":{"team":"core"}}`,
 		},
 	})
 	h.AddTool("test_tool", "A test tool", nil)
@@ -84,6 +91,25 @@ func TestID001_IdentityEnvVarsApplied(t *testing.T) {
 		if client != "claude" {
 			t.Errorf("ID-001 FAILED: Event client=%q, expected 'claude'\n"+
 				"  Per Interface-Pack §5, SUB_CLIENT should be applied", client)
+		}
+
+		// Check principal matches
+		principal := testharness.GetString(evt, "principal")
+		if principal != "test-user@example.com" {
+			t.Errorf("ID-001 FAILED: Event principal=%q, expected 'test-user@example.com'\n"+
+				"  Per Interface-Pack §5, SUB_PRINCIPAL should be applied", principal)
+		}
+
+		// Check workload matches
+		workloadRepo := testharness.GetString(evt, "workload.repo")
+		if workloadRepo != "subluminal" {
+			t.Errorf("ID-001 FAILED: Event workload.repo=%q, expected 'subluminal'\n"+
+				"  Per Interface-Pack §5, SUB_WORKLOAD should be applied", workloadRepo)
+		}
+		workloadTeam := testharness.GetString(evt, "workload.labels.team")
+		if workloadTeam != "core" {
+			t.Errorf("ID-001 FAILED: Event workload.labels.team=%q, expected 'core'\n"+
+				"  Per Interface-Pack §5, SUB_WORKLOAD should be applied", workloadTeam)
 		}
 	}
 }
@@ -143,14 +169,60 @@ func TestID002_WorkloadContextTolerance(t *testing.T) {
 // =============================================================================
 
 func TestLED001_LedgerIngestionDurability(t *testing.T) {
-	t.Skip("LED-001: Requires ledger component (not yet implemented)")
+	const (
+		runCount    = 2
+		callsPerRun = 1666
+	)
 
-	// This test would:
-	// 1. Start ledgerd with WAL enabled
-	// 2. Ingest 10k events
-	// 3. Verify DB not corrupted
-	// 4. Verify run/call counts correct
-	// 5. Verify queries use indexes (are fast)
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	events := buildLedgerEvents(t, runCount, callsPerRun)
+
+	if err := ledger.IngestJSONL(bytes.NewReader(events), dbPath); err != nil {
+		t.Fatalf("LED-001 FAILED: ingest error: %v", err)
+	}
+
+	journalMode := strings.ToLower(sqliteQuery(t, dbPath, "PRAGMA journal_mode;"))
+	if journalMode != "wal" {
+		t.Fatalf("LED-001 FAILED: journal_mode=%q, expected WAL", journalMode)
+	}
+
+	integrity := strings.ToLower(sqliteQuery(t, dbPath, "PRAGMA integrity_check;"))
+	if integrity != "ok" {
+		t.Fatalf("LED-001 FAILED: integrity_check=%q, expected ok", integrity)
+	}
+
+	expectedRuns := fmt.Sprintf("%d", runCount)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM runs;"); actual != expectedRuns {
+		t.Fatalf("LED-001 FAILED: run count=%s, expected %s", actual, expectedRuns)
+	}
+
+	expectedCalls := fmt.Sprintf("%d", runCount*callsPerRun)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM tool_calls;"); actual != expectedCalls {
+		t.Fatalf("LED-001 FAILED: call count=%s, expected %s", actual, expectedCalls)
+	}
+
+	expectedPreviews := fmt.Sprintf("%d", runCount*callsPerRun)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM previews;"); actual != expectedPreviews {
+		t.Fatalf("LED-001 FAILED: preview count=%s, expected %s", actual, expectedPreviews)
+	}
+
+	expectedHints := fmt.Sprintf("%d", runCount*callsPerRun)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM hints;"); actual != expectedHints {
+		t.Fatalf("LED-001 FAILED: hint count=%s, expected %s", actual, expectedHints)
+	}
+
+	expectedPolicies := fmt.Sprintf("%d", runCount)
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM policy_versions;"); actual != expectedPolicies {
+		t.Fatalf("LED-001 FAILED: policy version count=%s, expected %s", actual, expectedPolicies)
+	}
+	if actual := sqliteQuery(t, dbPath, "SELECT COUNT(*) FROM policy_versions WHERE mode IS NULL OR mode = '';"); actual != "0" {
+		t.Fatalf("LED-001 FAILED: policy version mode count=%s, expected 0", actual)
+	}
+
+	plan := sqliteQuery(t, dbPath, "EXPLAIN QUERY PLAN SELECT * FROM tool_calls WHERE run_id='run-1' ORDER BY created_at LIMIT 5;")
+	if !strings.Contains(plan, "idx_tool_calls_run_created") {
+		t.Fatalf("LED-001 FAILED: expected index usage, plan=%q", plan)
+	}
 }
 
 // =============================================================================
@@ -161,14 +233,223 @@ func TestLED001_LedgerIngestionDurability(t *testing.T) {
 // =============================================================================
 
 func TestLED002_BackpressureDropsPreviewsNotDecisions(t *testing.T) {
-	t.Skip("LED-002: Requires ledger component with backpressure simulation")
+	release := make(chan struct{})
+	writer := newBlockingWriter(release)
 
-	// This test would:
-	// 1. Force ingest overload (slow disk simulation)
-	// 2. Burst events at high rate
-	// 3. Verify decision events persist
-	// 4. Verify preview fields may be dropped/truncated
-	// 5. Verify shim doesn't block
+	emitter := core.NewEmitterWithOptions(writer, core.EmitterOptions{
+		BufferSize:           8,
+		PreviewDropThreshold: 4,
+	})
+	emitter.Start()
+
+	const totalCalls = 6
+	emitDone := make(chan struct{})
+	go func() {
+		defer close(emitDone)
+		for i := 0; i < totalCalls; i++ {
+			callID := fmt.Sprintf("call-%d", i)
+			emitter.Emit(makeStartEvent(callID, i+1))
+			emitter.EmitSync(makeDecisionEvent(callID))
+			emitter.Emit(makeEndEvent(callID))
+		}
+	}()
+
+	select {
+	case <-emitDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("LED-002 FAILED: emitter blocked under backpressure")
+	}
+
+	close(release)
+	emitter.Close()
+
+	sink := testharness.NewEventSink()
+	if err := sink.Capture(bytes.NewReader(writer.Bytes())); err != nil {
+		t.Fatalf("LED-002 FAILED: event capture error: %v", err)
+	}
+	if errors := sink.Errors(); len(errors) > 0 {
+		t.Fatalf("LED-002 FAILED: event parse errors: %v", errors)
+	}
+
+	decisions := sink.ByType(string(event.EventTypeToolCallDecision))
+	if len(decisions) != totalCalls {
+		t.Fatalf("LED-002 FAILED: expected %d decision events, got %d", totalCalls, len(decisions))
+	}
+
+	var previewDropped bool
+	for _, evt := range sink.ByType(string(event.EventTypeToolCallStart)) {
+		truncated := testharness.GetBool(evt, "call.preview.truncated")
+		argsPreview := testharness.GetString(evt, "call.preview.args_preview")
+		if truncated && argsPreview == "" {
+			previewDropped = true
+			break
+		}
+	}
+	if !previewDropped {
+		for _, evt := range sink.ByType(string(event.EventTypeToolCallEnd)) {
+			truncated := testharness.GetBool(evt, "preview.truncated")
+			resultPreview := testharness.GetString(evt, "preview.result_preview")
+			if truncated && resultPreview == "" {
+				previewDropped = true
+				break
+			}
+		}
+	}
+	if !previewDropped {
+		t.Error("LED-002 FAILED: expected preview fields to be dropped under backpressure")
+	}
+}
+
+func TestLED002_DecisionsBlockWhenQueueFull(t *testing.T) {
+	release := make(chan struct{})
+	writer := newBlockingWriter(release)
+
+	emitter := core.NewEmitterWithOptions(writer, core.EmitterOptions{
+		BufferSize:           2,
+		PreviewDropThreshold: 1,
+	})
+	emitter.Start()
+
+	const totalDecisions = 4
+	emitDone := make(chan struct{})
+	go func() {
+		defer close(emitDone)
+		for i := 0; i < totalDecisions; i++ {
+			callID := fmt.Sprintf("decision-%d", i)
+			emitter.EmitSync(makeDecisionEvent(callID))
+		}
+	}()
+
+	select {
+	case <-emitDone:
+		t.Fatal("LED-002 FAILED: decisions dropped instead of waiting for queue space")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-emitDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("LED-002 FAILED: decisions did not drain after release")
+	}
+
+	emitter.Close()
+
+	sink := testharness.NewEventSink()
+	if err := sink.Capture(bytes.NewReader(writer.Bytes())); err != nil {
+		t.Fatalf("LED-002 FAILED: event capture error: %v", err)
+	}
+	if errors := sink.Errors(); len(errors) > 0 {
+		t.Fatalf("LED-002 FAILED: event parse errors: %v", errors)
+	}
+
+	decisions := sink.ByType(string(event.EventTypeToolCallDecision))
+	if len(decisions) != totalDecisions {
+		t.Fatalf("LED-002 FAILED: expected %d decision events, got %d", totalDecisions, len(decisions))
+	}
+}
+
+type blockingWriter struct {
+	release <-chan struct{}
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func newBlockingWriter(release <-chan struct{}) *blockingWriter {
+	return &blockingWriter{release: release}
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *blockingWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buf.Bytes()...)
+}
+
+func makeEnvelope(eventType event.EventType) event.Envelope {
+	return event.Envelope{
+		V:       core.InterfaceVersion,
+		Type:    eventType,
+		TS:      time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:   "run-led-002",
+		AgentID: "agent-led-002",
+		Client:  event.ClientCodex,
+		Env:     event.EnvCI,
+		Source: event.Source{
+			HostID: "host-led-002",
+			ProcID: "proc-led-002",
+			ShimID: "shim-led-002",
+		},
+	}
+}
+
+func makeCallRef(callID string) event.CallRef {
+	return event.CallRef{
+		CallID:     callID,
+		ServerName: "server-led-002",
+		ToolName:   "tool-led-002",
+		ArgsHash:   "hash-led-002",
+	}
+}
+
+func makeStartEvent(callID string, seq int) event.ToolCallStartEvent {
+	return event.ToolCallStartEvent{
+		Envelope: makeEnvelope(event.EventTypeToolCallStart),
+		Call: event.CallInfo{
+			CallID:     callID,
+			ServerName: "server-led-002",
+			ToolName:   "tool-led-002",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash-led-002",
+			BytesIn:    42,
+			Preview: event.Preview{
+				Truncated:   false,
+				ArgsPreview: "args-preview-" + callID,
+			},
+			Seq: seq,
+		},
+	}
+}
+
+func makeDecisionEvent(callID string) event.ToolCallDecisionEvent {
+	return event.ToolCallDecisionEvent{
+		Envelope: makeEnvelope(event.EventTypeToolCallDecision),
+		Call:     makeCallRef(callID),
+		Decision: event.Decision{
+			Action:   event.DecisionAllow,
+			Severity: event.SeverityInfo,
+			Explain: event.DecisionExplain{
+				Summary:    "allowed",
+				ReasonCode: "ALLOW",
+			},
+			Policy: event.PolicyInfo{
+				PolicyID:      "policy-led-002",
+				PolicyVersion: "0.1.0",
+				PolicyHash:    "hash-led-002",
+			},
+		},
+	}
+}
+
+func makeEndEvent(callID string) event.ToolCallEndEvent {
+	return event.ToolCallEndEvent{
+		Envelope:  makeEnvelope(event.EventTypeToolCallEnd),
+		Call:      makeCallRef(callID),
+		Status:    event.CallStatusOK,
+		LatencyMS: 5,
+		BytesOut:  24,
+		Preview: event.ResultPreview{
+			Truncated:     false,
+			ResultPreview: "result-preview-" + callID,
+		},
+	}
 }
 
 // =============================================================================
@@ -678,4 +959,201 @@ func getFakeMCPPath() string {
 		return p
 	}
 	return filepath.Join(findRepoRoot(), "bin", "fakemcp")
+}
+
+func buildLedgerEvents(t *testing.T, runCount, callsPerRun int) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	seq := 0
+	nextTS := func() string {
+		ts := start.Add(time.Duration(seq) * time.Second).Format(time.RFC3339Nano)
+		seq++
+		return ts
+	}
+	source := event.Source{
+		HostID: "host-1",
+		ProcID: "proc-1",
+		ShimID: "shim-1",
+	}
+
+	for runIndex := 0; runIndex < runCount; runIndex++ {
+		runID := fmt.Sprintf("run-%d", runIndex+1)
+		policyID := fmt.Sprintf("policy-%d", runIndex+1)
+		policyHash := fmt.Sprintf("hash-%d", runIndex+1)
+		ts := nextTS()
+		runStart := event.RunStartEvent{
+			Envelope: event.Envelope{
+				V:       "0.1.0",
+				Type:    event.EventTypeRunStart,
+				TS:      ts,
+				RunID:   runID,
+				AgentID: "agent-1",
+				Client:  event.ClientClaude,
+				Env:     event.EnvCI,
+				Source:  source,
+			},
+			Run: event.RunInfo{
+				StartedAt: ts,
+				Mode:      event.RunModeObserve,
+				Policy: event.PolicyInfo{
+					PolicyID:      policyID,
+					PolicyVersion: "1",
+					PolicyHash:    policyHash,
+				},
+			},
+		}
+		appendEvent(t, &buf, runStart)
+
+		for callIndex := 0; callIndex < callsPerRun; callIndex++ {
+			callID := fmt.Sprintf("call-%d-%d", runIndex+1, callIndex+1)
+			argsHash := fmt.Sprintf("hash-%d-%d", runIndex+1, callIndex+1)
+
+			ts = nextTS()
+			startEvent := event.ToolCallStartEvent{
+				Envelope: event.Envelope{
+					V:       "0.1.0",
+					Type:    event.EventTypeToolCallStart,
+					TS:      ts,
+					RunID:   runID,
+					AgentID: "agent-1",
+					Client:  event.ClientClaude,
+					Env:     event.EnvCI,
+					Source:  source,
+				},
+				Call: event.CallInfo{
+					CallID:     callID,
+					ServerName: "server",
+					ToolName:   "tool",
+					Transport:  "mcp_stdio",
+					ArgsHash:   argsHash,
+					BytesIn:    128,
+					Preview: event.Preview{
+						Truncated:   false,
+						ArgsPreview: fmt.Sprintf("args-preview-%s", callID),
+					},
+					Seq: callIndex + 1,
+				},
+			}
+			appendEvent(t, &buf, startEvent)
+
+			ts = nextTS()
+			decisionEvent := event.ToolCallDecisionEvent{
+				Envelope: event.Envelope{
+					V:       "0.1.0",
+					Type:    event.EventTypeToolCallDecision,
+					TS:      ts,
+					RunID:   runID,
+					AgentID: "agent-1",
+					Client:  event.ClientClaude,
+					Env:     event.EnvCI,
+					Source:  source,
+				},
+				Call: event.CallRef{
+					CallID:     callID,
+					ServerName: "server",
+					ToolName:   "tool",
+					ArgsHash:   argsHash,
+				},
+				Decision: event.Decision{
+					Action:   event.DecisionAllow,
+					RuleID:   nil,
+					Severity: event.SeverityInfo,
+					Explain: event.DecisionExplain{
+						Summary:    "allowed",
+						ReasonCode: "ALLOW",
+					},
+					Policy: event.PolicyInfo{
+						PolicyID:      policyID,
+						PolicyVersion: "1",
+						PolicyHash:    policyHash,
+					},
+					Hint: &event.Hint{
+						HintText: "hint for " + callID,
+						SuggestedArgs: map[string]any{
+							"call_id": callID,
+						},
+						HintKind: event.HintKindArgFix,
+					},
+				},
+			}
+			appendEvent(t, &buf, decisionEvent)
+
+			ts = nextTS()
+			endEvent := event.ToolCallEndEvent{
+				Envelope: event.Envelope{
+					V:       "0.1.0",
+					Type:    event.EventTypeToolCallEnd,
+					TS:      ts,
+					RunID:   runID,
+					AgentID: "agent-1",
+					Client:  event.ClientClaude,
+					Env:     event.EnvCI,
+					Source:  source,
+				},
+				Call: event.CallRef{
+					CallID:     callID,
+					ServerName: "server",
+					ToolName:   "tool",
+					ArgsHash:   argsHash,
+				},
+				Status:    event.CallStatusOK,
+				LatencyMS: 4,
+				BytesOut:  256,
+				Preview: event.ResultPreview{
+					Truncated:     false,
+					ResultPreview: fmt.Sprintf("result-preview-%s", callID),
+				},
+			}
+			appendEvent(t, &buf, endEvent)
+		}
+
+		ts = nextTS()
+		runEnd := event.RunEndEvent{
+			Envelope: event.Envelope{
+				V:       "0.1.0",
+				Type:    event.EventTypeRunEnd,
+				TS:      ts,
+				RunID:   runID,
+				AgentID: "agent-1",
+				Client:  event.ClientClaude,
+				Env:     event.EnvCI,
+				Source:  source,
+			},
+			Run: event.RunEndInfo{
+				EndedAt: ts,
+				Status:  event.RunStatusSucceeded,
+				Summary: event.RunSummary{
+					CallsTotal:   callsPerRun,
+					CallsAllowed: callsPerRun,
+					DurationMS:   callsPerRun * 10,
+				},
+			},
+		}
+		appendEvent(t, &buf, runEnd)
+	}
+
+	return buf.Bytes()
+}
+
+func appendEvent(t *testing.T, buf *bytes.Buffer, evt any) {
+	t.Helper()
+	data, err := event.SerializeEvent(evt)
+	if err != nil {
+		t.Fatalf("LED-001 FAILED: serialize error: %v", err)
+	}
+	if _, err := buf.Write(data); err != nil {
+		t.Fatalf("LED-001 FAILED: buffer write error: %v", err)
+	}
+}
+
+func sqliteQuery(t *testing.T, dbPath, query string) string {
+	t.Helper()
+	cmd := exec.Command("sqlite3", "-batch", dbPath, query)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("LED-001 FAILED: sqlite3 error: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output))
 }

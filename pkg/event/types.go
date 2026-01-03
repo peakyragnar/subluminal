@@ -59,17 +59,23 @@ type Source struct {
 	ShimID string `json:"shim_id"` // Unique per shim instance
 }
 
+// Workload contains optional workload context for a run.
+// Per Interface-Pack §1.3.1
+type Workload map[string]any
+
 // Envelope contains the required fields for every event.
 // Per Interface-Pack §1.3
 type Envelope struct {
-	V       string    `json:"v"`        // Interface pack version, e.g. "0.1.0"
-	Type    EventType `json:"type"`     // Event type
-	TS      string    `json:"ts"`       // RFC3339 timestamp in UTC
-	RunID   string    `json:"run_id"`   // Globally unique run identifier
-	AgentID string    `json:"agent_id"` // Agent identifier
-	Client  Client    `json:"client"`   // Client type
-	Env     Env       `json:"env"`      // Execution environment
-	Source  Source    `json:"source"`   // Producer instance info
+	V         string    `json:"v"`                   // Interface pack version, e.g. "0.1.0"
+	Type      EventType `json:"type"`                // Event type
+	TS        string    `json:"ts"`                  // RFC3339 timestamp in UTC
+	RunID     string    `json:"run_id"`              // Globally unique run identifier
+	AgentID   string    `json:"agent_id"`            // Agent identifier
+	Client    Client    `json:"client"`              // Client type
+	Env       Env       `json:"env"`                 // Execution environment
+	Principal string    `json:"principal,omitempty"` // Who initiated the run
+	Workload  Workload  `json:"workload,omitempty"`  // Optional workload context
+	Source    Source    `json:"source"`              // Producer instance info
 }
 
 // Preview contains truncated previews of args/results.
@@ -152,6 +158,18 @@ const (
 	DecisionTerminateRun   DecisionAction = "TERMINATE_RUN"
 )
 
+// HintKind represents the type of recovery hint.
+// Per Interface-Pack §3.2.4.
+type HintKind string
+
+const (
+	HintKindArgFix HintKind = "ARG_FIX"
+	HintKindBudget HintKind = "BUDGET"
+	HintKindRate   HintKind = "RATE"
+	HintKindSafety HintKind = "SAFETY"
+	HintKindOther  HintKind = "OTHER"
+)
+
 // Severity represents the severity level.
 // Per Interface-Pack §1.6
 type Severity string
@@ -167,6 +185,15 @@ const (
 type DecisionExplain struct {
 	Summary    string `json:"summary"`
 	ReasonCode string `json:"reason_code"`
+}
+
+// Hint contains structured recovery guidance for REJECT_WITH_HINT.
+// Per Interface-Pack §3.2.4.
+type Hint struct {
+	HintText      string         `json:"hint_text"`
+	SuggestedArgs map[string]any `json:"suggested_args,omitempty"`
+	RetryAdvice   *string        `json:"retry_advice,omitempty"`
+	HintKind      HintKind       `json:"hint_kind"`
 }
 
 // CallRef contains minimal call identification for decision/end events.
@@ -186,6 +213,7 @@ type Decision struct {
 	Severity  Severity        `json:"severity"`
 	Explain   DecisionExplain `json:"explain"`
 	BackoffMS int             `json:"backoff_ms,omitempty"`
+	Hint      *Hint           `json:"hint,omitempty"`
 	Policy    PolicyInfo      `json:"policy"`
 }
 

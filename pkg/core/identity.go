@@ -11,18 +11,22 @@ package core
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/subluminal/subluminal/pkg/event"
 )
 
 // Identity contains the identity values for a shim instance.
 type Identity struct {
-	RunID   string       // Globally unique run identifier
-	AgentID string       // Agent identifier (from SUB_AGENT_ID or default)
-	Client  event.Client // Client type (from SUB_CLIENT or default)
-	Env     event.Env    // Environment (from SUB_ENV or default)
+	RunID     string         // Globally unique run identifier
+	AgentID   string         // Agent identifier (from SUB_AGENT_ID or default)
+	Principal string         // Initiator identity (from SUB_PRINCIPAL if set)
+	Workload  event.Workload // Optional workload context (from SUB_WORKLOAD if set)
+	Client    event.Client   // Client type (from SUB_CLIENT or default)
+	Env       event.Env      // Environment (from SUB_ENV or default)
 }
 
 // Source contains the producer instance identifiers.
@@ -64,12 +68,16 @@ func GenerateUUID() string {
 //   - SUB_AGENT_ID: Agent identifier (defaults to "unknown")
 //   - SUB_CLIENT: Client type - "claude" | "codex" | "headless" | "custom" | "unknown"
 //   - SUB_ENV: Environment - "dev" | "ci" | "prod" | "unknown"
+//   - SUB_PRINCIPAL: Optional principal identity
+//   - SUB_WORKLOAD: Optional JSON object describing workload context
 func ReadIdentityFromEnv() Identity {
 	id := Identity{
-		RunID:   os.Getenv("SUB_RUN_ID"),
-		AgentID: os.Getenv("SUB_AGENT_ID"),
-		Client:  parseClient(os.Getenv("SUB_CLIENT")),
-		Env:     parseEnv(os.Getenv("SUB_ENV")),
+		RunID:     os.Getenv("SUB_RUN_ID"),
+		AgentID:   os.Getenv("SUB_AGENT_ID"),
+		Principal: os.Getenv("SUB_PRINCIPAL"),
+		Workload:  parseWorkload(os.Getenv("SUB_WORKLOAD")),
+		Client:    parseClient(os.Getenv("SUB_CLIENT")),
+		Env:       parseEnv(os.Getenv("SUB_ENV")),
 	}
 
 	// Generate run_id if not provided
@@ -132,6 +140,20 @@ func parseEnv(s string) event.Env {
 	default:
 		return event.EnvUnknown
 	}
+}
+
+func parseWorkload(raw string) event.Workload {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var workload event.Workload
+	if err := json.Unmarshal([]byte(raw), &workload); err != nil {
+		return nil
+	}
+	if len(workload) == 0 {
+		return nil
+	}
+	return workload
 }
 
 // InterfaceVersion is the Interface-Pack version this implementation targets.

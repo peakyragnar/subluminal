@@ -33,3 +33,6 @@ go.work
 .cache/
 .gocache/
 .gomodcache/
+
+# bv (beads viewer) local config and caches
+.bv/

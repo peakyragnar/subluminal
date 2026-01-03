@@ -79,7 +79,7 @@ func TestEVT001_SingleLineJSON(t *testing.T) {
 
 	// Check 4: No \r before \n (Windows line ending)
 	if bytes.Contains(output, []byte("\r\n")) {
-		t.Errorf("EVT-001 FAILED: Output contains Windows line ending \\r\\n\n"+
+		t.Errorf("EVT-001 FAILED: Output contains Windows line ending \\r\\n\n" +
 			"  JSONL requires Unix line ending \\n only")
 	}
 }
@@ -326,6 +326,115 @@ func TestEVT002_FieldValues(t *testing.T) {
 	}
 }
 
+func TestEVT002_OptionalIdentityFields(t *testing.T) {
+	withOptional := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:         "0.1.0",
+			Type:      event.EventTypeToolCallStart,
+			TS:        "2025-01-15T12:00:00.000Z",
+			RunID:     "run_optional",
+			AgentID:   "agent_optional",
+			Client:    event.ClientCodex,
+			Env:       event.EnvCI,
+			Principal: "user@example.com",
+			Workload: event.Workload{
+				"repo": "subluminal",
+				"labels": map[string]string{
+					"team": "core",
+				},
+			},
+			Source: event.Source{
+				HostID: "host_opt",
+				ProcID: "proc_opt",
+				ShimID: "shim_opt",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_optional",
+			ServerName: "server",
+			ToolName:   "tool",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash",
+			BytesIn:    1,
+			Seq:        1,
+		},
+	}
+
+	output, err := event.SerializeEvent(withOptional)
+	if err != nil {
+		t.Fatalf("SerializeEvent returned error: %v", err)
+	}
+
+	jsonPart := bytes.TrimSuffix(output, []byte("\n"))
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+		t.Fatalf("Failed to parse output: %v", err)
+	}
+
+	if got := parsed["principal"]; got != "user@example.com" {
+		t.Fatalf("expected principal %q, got %#v", "user@example.com", got)
+	}
+
+	workload, ok := parsed["workload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected workload object, got %#v", parsed["workload"])
+	}
+	if got := workload["repo"]; got != "subluminal" {
+		t.Fatalf("expected workload.repo %q, got %#v", "subluminal", got)
+	}
+	labels, ok := workload["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected workload.labels object, got %#v", workload["labels"])
+	}
+	if got := labels["team"]; got != "core" {
+		t.Fatalf("expected workload.labels.team %q, got %#v", "core", got)
+	}
+
+	withoutOptional := event.ToolCallStartEvent{
+		Envelope: event.Envelope{
+			V:       "0.1.0",
+			Type:    event.EventTypeToolCallStart,
+			TS:      "2025-01-15T12:00:00.000Z",
+			RunID:   "run_optional_missing",
+			AgentID: "agent_optional_missing",
+			Client:  event.ClientCodex,
+			Env:     event.EnvCI,
+			Source: event.Source{
+				HostID: "host_opt",
+				ProcID: "proc_opt",
+				ShimID: "shim_opt",
+			},
+		},
+		Call: event.CallInfo{
+			CallID:     "call_optional_missing",
+			ServerName: "server",
+			ToolName:   "tool",
+			Transport:  "mcp_stdio",
+			ArgsHash:   "hash",
+			BytesIn:    1,
+			Seq:        1,
+		},
+	}
+
+	output, err = event.SerializeEvent(withoutOptional)
+	if err != nil {
+		t.Fatalf("SerializeEvent returned error: %v", err)
+	}
+
+	jsonPart = bytes.TrimSuffix(output, []byte("\n"))
+	parsed = map[string]any{}
+	if err := json.Unmarshal(jsonPart, &parsed); err != nil {
+		t.Fatalf("Failed to parse output: %v", err)
+	}
+
+	if _, exists := parsed["principal"]; exists {
+		t.Fatalf("expected principal to be omitted when empty")
+	}
+	if _, exists := parsed["workload"]; exists {
+		t.Fatalf("expected workload to be omitted when empty")
+	}
+}
+
 func TestEVT002_CallFields(t *testing.T) {
 	// Verify tool_call_start specific fields (call object)
 	evt := event.ToolCallStartEvent{
@@ -451,7 +560,7 @@ func TestEVT004_RunIDPresent(t *testing.T) {
 
 	// Check run_id field exists
 	if _, exists := parsed["run_id"]; !exists {
-		t.Errorf("EVT-004 FAILED: Missing required field 'run_id'\n"+
+		t.Errorf("EVT-004 FAILED: Missing required field 'run_id'\n" +
 			"  Per Interface-Pack §1.3, run_id is a REQUIRED field in every event")
 	}
 }
@@ -502,7 +611,7 @@ func TestEVT004_RunIDNonEmpty(t *testing.T) {
 		t.Fatalf("EVT-004 FAILED: run_id is not a string")
 	}
 	if runID == "" {
-		t.Errorf("EVT-004 FAILED: run_id is an empty string\n"+
+		t.Errorf("EVT-004 FAILED: run_id is an empty string\n" +
 			"  Per Interface-Pack §0.3, run_id MUST be globally unique (cannot be empty)")
 	}
 }

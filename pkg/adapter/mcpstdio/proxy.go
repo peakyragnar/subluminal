@@ -27,6 +27,8 @@ import (
 	"github.com/subluminal/subluminal/pkg/policy"
 )
 
+const defaultThrottleBackoffMS = 1000
+
 // Proxy handles bidirectional JSON-RPC proxying with event emission.
 type Proxy struct {
 	// Upstream process
@@ -204,7 +206,11 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 			ReasonCode: policyDecision.ReasonCode,
 		},
 		BackoffMS: policyDecision.BackoffMS,
+		Hint:      sanitizeHint(policyDecision.Hint),
 		Policy:    p.policy.Info,
+	}
+	if decision.Action == event.DecisionThrottle && decision.BackoffMS <= 0 {
+		decision.BackoffMS = defaultThrottleBackoffMS
 	}
 
 	enforced := p.policy.Mode != event.RunModeObserve
@@ -362,14 +368,16 @@ func (p *Proxy) forwardToAgent(data []byte) {
 
 func (p *Proxy) makeEnvelope(eventType event.EventType) event.Envelope {
 	return event.Envelope{
-		V:       core.InterfaceVersion,
-		Type:    eventType,
-		TS:      time.Now().UTC().Format(time.RFC3339Nano),
-		RunID:   p.identity.RunID,
-		AgentID: p.identity.AgentID,
-		Client:  p.identity.Client,
-		Env:     p.identity.Env,
-		Source:  p.source.ToEventSource(),
+		V:         core.InterfaceVersion,
+		Type:      eventType,
+		TS:        time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:     p.identity.RunID,
+		AgentID:   p.identity.AgentID,
+		Principal: p.identity.Principal,
+		Workload:  p.identity.Workload,
+		Client:    p.identity.Client,
+		Env:       p.identity.Env,
+		Source:    p.source.ToEventSource(),
 	}
 }
 
@@ -458,14 +466,31 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 		subluminal["backoff_ms"] = decision.BackoffMS
 	}
 	if decision.Action == event.DecisionRejectWithHint {
-		hintText := decision.Explain.Summary
+		hintText := ""
+		hintKind := string(event.HintKindOther)
+		hint := map[string]any{}
+		if decision.Hint != nil {
+			hintText = decision.Hint.HintText
+			if decision.Hint.HintKind != "" {
+				hintKind = string(decision.Hint.HintKind)
+			}
+			if decision.Hint.SuggestedArgs != nil {
+				hint["suggested_args"] = sanitizeValue(decision.Hint.SuggestedArgs)
+			}
+			if decision.Hint.RetryAdvice != nil {
+				hint["retry_advice"] = redactSecrets(*decision.Hint.RetryAdvice)
+			}
+		}
+		if hintText == "" {
+			hintText = decision.Explain.Summary
+		}
 		if hintText == "" {
 			hintText = "Rejected with hint"
 		}
-		subluminal["hint"] = map[string]any{
-			"hint_text": hintText,
-			"hint_kind": "OTHER",
-		}
+		hintText = redactSecrets(hintText)
+		hint["hint_text"] = hintText
+		hint["hint_kind"] = hintKind
+		subluminal["hint"] = hint
 	}
 
 	return map[string]any{

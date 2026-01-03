@@ -6,6 +6,7 @@ package contract
 
 import (
 	"testing"
+	"time"
 
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
@@ -150,11 +151,12 @@ func TestPOL002_AllowDenyOrdering(t *testing.T) {
 	}
 
 	// Assert: Decision shows BLOCK with correct rule_id
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
-		t.Fatal("POL-002 FAILED: No tool_call_decision events")
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 1, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
+		t.Fatalf("POL-002 FAILED: Expected decision event, got %d", len(decisions))
 	}
 
+	decisions := h.EventSink.ByType("tool_call_decision")
 	evt := decisions[0]
 	action := testharness.GetString(evt, "decision.action")
 	if action != "BLOCK" {
@@ -243,12 +245,17 @@ func TestPOL003_BudgetRuleDecrementsAndBlocks(t *testing.T) {
 		t.Error("POL-003 FAILED: Call 4 should have been blocked (exceeded budget)")
 	}
 
-	// Assert: Decision cites budget rule
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) < 4 {
-		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
+	// Ensure all events are captured before inspecting decisions.
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Failed to stop harness: %v", err)
 	}
 
+	// Assert: Decision cites budget rule
+	if !h.EventSink.WaitForTypeCount("tool_call_decision", 4, 2*time.Second) {
+		decisions := h.EventSink.ByType("tool_call_decision")
+		t.Fatalf("POL-003 FAILED: Expected 4 decisions, got %d", len(decisions))
+	}
+	decisions := h.EventSink.ByType("tool_call_decision")
 	lastDecision := decisions[3]
 	action := testharness.GetString(lastDecision, "decision.action")
 	allowedActions := map[string]bool{"BLOCK": true, "REJECT_WITH_HINT": true, "TERMINATE_RUN": true}
@@ -394,12 +401,14 @@ func TestPOL005_BreakerRepeatThresholdTriggers(t *testing.T) {
 	// Execute: Call with same args repeatedly (same args_hash)
 	sameArgs := map[string]any{"always": "same"}
 	var lastResult *testharness.ToolCallResponse
+	callsMade := 0
 
 	for i := 0; i < 10; i++ {
 		resp, err := h.CallTool("repetitive_tool", sameArgs)
 		if err != nil {
 			t.Fatalf("Call %d failed: %v", i+1, err)
 		}
+		callsMade++
 		lastResult = testharness.WrapResponse(resp)
 
 		// If breaker tripped, stop early
@@ -412,6 +421,8 @@ func TestPOL005_BreakerRepeatThresholdTriggers(t *testing.T) {
 	if lastResult.IsSuccess() {
 		t.Error("POL-005 FAILED: Breaker should have tripped after repeated identical calls")
 	}
+
+	waitForDecisionCount(t, h.EventSink, callsMade, time.Second)
 
 	// Assert: Decision is TERMINATE_RUN or BLOCK
 	decisions := h.EventSink.ByType("tool_call_decision")
@@ -496,6 +507,8 @@ func TestPOL006_DedupeWindowBlocksDuplicate(t *testing.T) {
 		t.Error("POL-006 FAILED: Second identical call should be blocked as duplicate")
 	}
 
+	waitForDecisionCount(t, h.EventSink, 2, time.Second)
+
 	// Assert: Decision explains duplicate
 	decisions := h.EventSink.ByType("tool_call_decision")
 	if len(decisions) < 2 {
@@ -506,6 +519,26 @@ func TestPOL006_DedupeWindowBlocksDuplicate(t *testing.T) {
 	action := testharness.GetString(secondDecision, "decision.action")
 	if action != "BLOCK" && action != "REJECT_WITH_HINT" {
 		t.Errorf("POL-006 FAILED: Second call decision was %q, expected BLOCK or REJECT_WITH_HINT", action)
+	}
+}
+
+func waitForDecisionCount(t *testing.T, sink *testharness.EventSink, want int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		count := len(sink.ByType("tool_call_decision"))
+		if count >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected %d tool_call_decision events within %s, got %d", want, timeout, count)
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -578,11 +611,11 @@ func TestPOL007_TagRuleAppliesRiskClass(t *testing.T) {
 	}
 
 	// If blocked, verify it was due to risk_class matching
-	decisions := h.EventSink.ByType("tool_call_decision")
-	if len(decisions) == 0 {
+	decisionEvt, err := waitForEventType(h.EventSink, "tool_call_decision", 500*time.Millisecond)
+	if err != nil {
 		t.Fatal("POL-007 FAILED: No decisions captured")
 	}
-	ruleID := testharness.GetString(decisions[0], "decision.rule_id")
+	ruleID := testharness.GetString(*decisionEvt, "decision.rule_id")
 	if ruleID != "deny-write-like" {
 		t.Errorf("POL-007 FAILED: decision.rule_id=%q, expected deny-write-like", ruleID)
 	}
