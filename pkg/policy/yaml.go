@@ -7,11 +7,12 @@ import (
 )
 
 type yamlFrame struct {
-	indent     int
-	container  any
-	pendingKey string
-	parentMap  map[string]any
-	parentKey  string
+	indent       int
+	container    any
+	pendingKey   string
+	parentMap    map[string]any
+	parentKey    string
+	inlineListKV bool
 }
 
 func parseYAMLBundle(input string) (any, error) {
@@ -59,7 +60,9 @@ func parseYAMLBundle(input string) (any, error) {
 				})
 				frame = &stack[len(stack)-1]
 			} else if frame.indent >= 0 {
-				return nil, fmt.Errorf("yaml line %d: unexpected indentation", lineNo)
+				if !frame.inlineListKV {
+					return nil, fmt.Errorf("yaml line %d: unexpected indentation", lineNo)
+				}
 			}
 		} else {
 			frame.pendingKey = ""
@@ -92,7 +95,7 @@ func parseYAMLBundle(input string) (any, error) {
 				list = append(list, itemMap)
 				updateListFrame(frame, list)
 
-				newFrame := yamlFrame{indent: indent, container: itemMap}
+				newFrame := yamlFrame{indent: indent, container: itemMap, inlineListKV: true}
 				if val == "" {
 					newFrame.pendingKey = key
 				}
