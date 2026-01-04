@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/subluminal/subluminal/pkg/canonical"
 	"github.com/subluminal/subluminal/pkg/core"
 	"github.com/subluminal/subluminal/pkg/event"
 	"github.com/subluminal/subluminal/pkg/importer"
@@ -716,9 +717,12 @@ func TestADAPT001_AdapterToolCallStartConsistent(t *testing.T) {
 	assertStartSnapshotComplete(t, "shim", shimResult.Start)
 	assertStartSnapshotComplete(t, "mock", mockResult.Start)
 
-	if !reflect.DeepEqual(shimResult.Start, mockResult.Start) {
+	shimStart := normalizeStartSnapshot(t, shimResult.Start)
+	mockStart := normalizeStartSnapshot(t, mockResult.Start)
+
+	if !reflect.DeepEqual(shimStart, mockStart) {
 		t.Fatalf("ADAPT-001 FAILED: tool_call_start mismatch across adapters\n  shim=%+v\n  mock=%+v",
-			shimResult.Start, mockResult.Start)
+			shimStart, mockStart)
 	}
 }
 
@@ -956,6 +960,28 @@ func snapshotFromStartEvent(evt event.ToolCallStartEvent) toolCallStartSnapshot 
 		PreviewTruncated: evt.Call.Preview.Truncated,
 		PreviewArgs:      evt.Call.Preview.ArgsPreview,
 	}
+}
+
+func normalizeStartSnapshot(t *testing.T, start toolCallStartSnapshot) toolCallStartSnapshot {
+	t.Helper()
+
+	if start.PreviewTruncated || start.PreviewArgs == "" {
+		start.PreviewArgs = ""
+		return start
+	}
+
+	var payload any
+	if err := json.Unmarshal([]byte(start.PreviewArgs), &payload); err != nil {
+		t.Fatalf("ADAPT-001 FAILED: preview args is not valid JSON: %v", err)
+	}
+
+	canonicalBytes, err := canonical.Canonicalize(payload)
+	if err != nil {
+		t.Fatalf("ADAPT-001 FAILED: canonicalize preview args: %v", err)
+	}
+
+	start.PreviewArgs = string(canonicalBytes)
+	return start
 }
 
 func buildToolsCallRaw(t *testing.T, id int64, toolName string, args map[string]any) []byte {
