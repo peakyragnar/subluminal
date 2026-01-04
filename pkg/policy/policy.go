@@ -681,6 +681,9 @@ func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolNam
 		Summary:    summary,
 		Severity:   severity,
 	}
+	if action == event.DecisionRejectWithHint {
+		decision.Hint = copyHint(rule.Effect.Hint)
+	}
 	if action == event.DecisionThrottle {
 		decision.BackoffMS = config.BackoffMS
 	}
@@ -745,6 +748,9 @@ func (b *Bundle) evaluateDedupe(rule Rule, serverName, toolName, argsHash string
 		ReasonCode: reason,
 		Summary:    summary,
 		Severity:   severity,
+	}
+	if action == event.DecisionRejectWithHint {
+		decision.Hint = copyHint(rule.Effect.Hint)
 	}
 	if rule.RuleID != "" {
 		ruleID := rule.RuleID
