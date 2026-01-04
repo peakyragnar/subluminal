@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,6 +150,43 @@ rules: []
 	}
 	if compiled.Bundle.Info.PolicyVersion != "1.0.2" {
 		t.Fatalf("expected version 1.0.2, got %q", compiled.Bundle.Info.PolicyVersion)
+	}
+}
+
+func TestWatchBundleFileEmitsOnlyOnChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.yaml")
+
+	if err := os.WriteFile(path, []byte(validPolicyYAML("1.0.0")), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	interval := 10 * time.Millisecond
+	updates := WatchBundleFile(ctx, path, interval)
+
+	select {
+	case update := <-updates:
+		t.Fatalf("unexpected initial update: %v", update.Err)
+	case <-time.After(interval * 5):
+	}
+
+	if err := os.WriteFile(path, []byte(validPolicyYAML("1.0.1")), 0o600); err != nil {
+		t.Fatalf("write updated policy: %v", err)
+	}
+
+	select {
+	case update := <-updates:
+		if update.Err != nil {
+			t.Fatalf("expected update without error, got %v", update.Err)
+		}
+		if update.Compiled.Bundle.Info.PolicyVersion != "1.0.1" {
+			t.Fatalf("expected version 1.0.1, got %q", update.Compiled.Bundle.Info.PolicyVersion)
+		}
+	case <-time.After(interval * 20):
+		t.Fatal("expected change event after policy update")
 	}
 }
 

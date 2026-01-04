@@ -242,13 +242,14 @@ func (w *BundleWatcher) Check() (CompiledBundle, bool, error) {
 	return compiled, true, nil
 }
 
-// WatchBundleFile polls a bundle file and emits change events.
+// WatchBundleFile polls a bundle file and emits change events after the initial state.
 func WatchBundleFile(ctx context.Context, path string, interval time.Duration) <-chan BundleChange {
 	if interval <= 0 {
 		interval = time.Second
 	}
 	updates := make(chan BundleChange)
 	watcher := NewBundleWatcher(path)
+	_, _, _ = watcher.Check()
 	go func() {
 		defer close(updates)
 		ticker := time.NewTicker(interval)
