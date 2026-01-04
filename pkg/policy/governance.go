@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -115,13 +116,21 @@ func LintBundle(spec BundleSpec) []LintIssue {
 
 // DiffChange describes a policy change.
 type DiffChange struct {
-	Kind     string `json:"kind"`
-	RuleID   string `json:"rule_id,omitempty"`
-	Field    string `json:"field,omitempty"`
-	Severity string `json:"severity"`
-	Summary  string `json:"summary"`
-	Before   any    `json:"before,omitempty"`
-	After    any    `json:"after,omitempty"`
+	Kind     string            `json:"kind"`
+	RuleID   string            `json:"rule_id,omitempty"`
+	Field    string            `json:"field,omitempty"`
+	Severity string            `json:"severity"`
+	Summary  string            `json:"summary"`
+	Before   any               `json:"before,omitempty"`
+	After    any               `json:"after,omitempty"`
+	Fields   []DiffFieldChange `json:"fields,omitempty"`
+}
+
+// DiffFieldChange captures field-level differences for rule changes.
+type DiffFieldChange struct {
+	Field  string `json:"field"`
+	Before any    `json:"before,omitempty"`
+	After  any    `json:"after,omitempty"`
 }
 
 // DiffResult aggregates policy changes.
@@ -234,6 +243,7 @@ func DiffBundles(oldSpec, newSpec BundleSpec) DiffResult {
 			Summary:  "rule modified",
 			Before:   oldRule,
 			After:    newRule,
+			Fields:   diffRuleFields(oldRule, newRule),
 		})
 	}
 
@@ -258,6 +268,80 @@ func DiffBundles(oldSpec, newSpec BundleSpec) DiffResult {
 		Summary:  summary,
 		Changes:  changes,
 	}
+}
+
+func diffRuleFields(oldRule, newRule Rule) []DiffFieldChange {
+	oldMap := ruleToMap(oldRule)
+	newMap := ruleToMap(newRule)
+	var changes []DiffFieldChange
+	diffValues("", oldMap, newMap, &changes)
+	sort.Slice(changes, func(i, j int) bool {
+		return changes[i].Field < changes[j].Field
+	})
+	return changes
+}
+
+func ruleToMap(rule Rule) map[string]any {
+	payload, err := json.Marshal(rule)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func diffValues(path string, oldValue, newValue any, changes *[]DiffFieldChange) {
+	if reflect.DeepEqual(oldValue, newValue) {
+		return
+	}
+
+	oldMap, oldOK := oldValue.(map[string]any)
+	newMap, newOK := newValue.(map[string]any)
+	if oldOK && newOK {
+		keys := make(map[string]struct{}, len(oldMap)+len(newMap))
+		for key := range oldMap {
+			keys[key] = struct{}{}
+		}
+		for key := range newMap {
+			keys[key] = struct{}{}
+		}
+		sorted := make([]string, 0, len(keys))
+		for key := range keys {
+			sorted = append(sorted, key)
+		}
+		sort.Strings(sorted)
+		for _, key := range sorted {
+			diffValues(joinFieldPath(path, key), oldMap[key], newMap[key], changes)
+		}
+		return
+	}
+
+	if _, ok := oldValue.([]any); ok {
+		if _, ok := newValue.([]any); ok {
+			*changes = append(*changes, DiffFieldChange{
+				Field:  path,
+				Before: oldValue,
+				After:  newValue,
+			})
+			return
+		}
+	}
+
+	*changes = append(*changes, DiffFieldChange{
+		Field:  path,
+		Before: oldValue,
+		After:  newValue,
+	})
+}
+
+func joinFieldPath(prefix, field string) string {
+	if prefix == "" {
+		return field
+	}
+	return prefix + "." + field
 }
 
 func rulesByID(rules []Rule) map[string]Rule {
