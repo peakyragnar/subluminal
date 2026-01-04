@@ -11,6 +11,17 @@ import (
 
 const sqliteSeparator = "\t"
 
+type sqliteParam struct {
+	Name      string
+	Value     string
+	IsNumeric bool
+}
+
+type sqliteQuery struct {
+	SQL    string
+	Params []sqliteParam
+}
+
 func defaultLedgerPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -57,12 +68,25 @@ func ensureLedgerExists(path string) error {
 	return nil
 }
 
-func runSQLiteQuery(dbPath, query string) (string, error) {
+func runSQLiteQuery(dbPath, query string, params []sqliteParam) (string, error) {
 	if strings.TrimSpace(dbPath) == "" {
 		return "", fmt.Errorf("db path is required")
 	}
 
-	cmd := exec.Command("sqlite3", "-batch", "-noheader", "-separator", sqliteSeparator, dbPath, query)
+	args := []string{"-batch", "-noheader", "-separator", sqliteSeparator}
+	if len(params) > 0 {
+		args = append(args, "-cmd", ".parameter init")
+		for _, param := range params {
+			if strings.TrimSpace(param.Name) == "" {
+				continue
+			}
+			value := sqliteParamValue(param)
+			args = append(args, "-cmd", fmt.Sprintf(".parameter set %s %s", param.Name, value))
+		}
+	}
+	args = append(args, dbPath, query)
+
+	cmd := exec.Command("sqlite3", args...)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -71,6 +95,13 @@ func runSQLiteQuery(dbPath, query string) (string, error) {
 		return "", fmt.Errorf("sqlite3 failed: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 	return output.String(), nil
+}
+
+func sqliteParamValue(param sqliteParam) string {
+	if param.IsNumeric {
+		return param.Value
+	}
+	return sqlText(param.Value)
 }
 
 func sqlText(value string) string {

@@ -111,9 +111,9 @@ func runTail(args []string) int {
 }
 
 func tailToolCalls(dbPath string, filters toolCallFilters, limit int) ([]toolCallRow, error) {
-	query := buildToolCallQuery(toolCallColumns, filters, false, limit)
+	query := buildToolCallQuery(toolCallColumns, filters, false, limit, 0)
 
-	output, err := runSQLiteQuery(dbPath, query)
+	output, err := runSQLiteQuery(dbPath, query.SQL, query.Params)
 	if err != nil {
 		return nil, err
 	}
@@ -121,10 +121,13 @@ func tailToolCalls(dbPath string, filters toolCallFilters, limit int) ([]toolCal
 }
 
 func tailToolCallWindow(dbPath string, filters toolCallFilters, limit int) ([]toolCallRow, error) {
-	query := buildToolCallQuery(toolCallColumns, filters, true, limit)
-	query = fmt.Sprintf("SELECT * FROM (%s) ORDER BY created_at ASC, call_id ASC", query)
+	query := buildToolCallQuery(toolCallColumns, filters, true, limit, 0)
+	window := sqliteQuery{
+		SQL:    fmt.Sprintf("SELECT * FROM (%s) ORDER BY created_at ASC, call_id ASC", query.SQL),
+		Params: query.Params,
+	}
 
-	output, err := runSQLiteQuery(dbPath, query)
+	output, err := runSQLiteQuery(dbPath, window.SQL, window.Params)
 	if err != nil {
 		return nil, err
 	}
