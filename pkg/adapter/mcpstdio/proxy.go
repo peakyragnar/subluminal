@@ -202,16 +202,13 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	}
 
 	argsRaw = normalizeArgsRaw(argsRaw)
-	preview, previewBytes, inspectTruncated := buildArgsPreview(argsRaw)
+	preview, inspectTruncated := buildArgsPreview(argsRaw)
 
-	// Compute args_hash (canonical for inspectable payloads, preview hash otherwise)
-	argsHash := ""
+	// Compute args_hash canonically; add args_stream_hash when inspection is truncated.
+	argsHash, _ := canonical.ArgsHash(args)
 	argsStreamHash := ""
 	if inspectTruncated {
-		argsHash = hashBytesHex(previewBytes)
 		argsStreamHash = hashStreamHex(argsRaw)
-	} else {
-		argsHash, _ = canonical.ArgsHash(args)
 	}
 
 	// Generate call_id
@@ -578,37 +575,27 @@ func normalizeArgsRaw(argsRaw []byte) []byte {
 	return argsRaw
 }
 
-func buildArgsPreview(argsRaw []byte) (event.Preview, []byte, bool) {
+func buildArgsPreview(argsRaw []byte) (event.Preview, bool) {
 	preview := event.Preview{}
 	size := len(argsRaw)
 
-	previewBytes := argsRaw
-	if size > maxPreviewSize {
-		previewBytes = make([]byte, maxPreviewSize+len("..."))
-		copy(previewBytes, argsRaw[:maxPreviewSize])
-		copy(previewBytes[maxPreviewSize:], []byte("..."))
-	}
-
-	inspectTruncated := size > maxInspectBytes
-	if inspectTruncated {
+	if size > maxInspectBytes {
 		preview.Truncated = true
 		preview.ArgsPreview = ""
-		return preview, previewBytes, true
+		return preview, true
 	}
 	if size > maxPreviewSize {
+		previewBytes := make([]byte, maxPreviewSize+len("..."))
+		copy(previewBytes, argsRaw[:maxPreviewSize])
+		copy(previewBytes[maxPreviewSize:], []byte("..."))
 		preview.Truncated = true
 		preview.ArgsPreview = string(previewBytes)
-		return preview, previewBytes, false
+		return preview, false
 	}
 
 	preview.Truncated = false
 	preview.ArgsPreview = string(argsRaw)
-	return preview, previewBytes, false
-}
-
-func hashBytesHex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return preview, false
 }
 
 func hashStreamHex(data []byte) string {

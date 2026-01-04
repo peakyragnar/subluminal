@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/subluminal/subluminal/pkg/canonical"
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
 
@@ -249,7 +250,17 @@ func TestBUF004_RollingHashForTruncatedPayload(t *testing.T) {
 	argsHash := testharness.GetString(evt, "call.args_hash")
 	if argsHash == "" {
 		t.Error("BUF-004 FAILED: args_hash is empty\n" +
-			"  Per Interface-Pack §1.9.2, truncated payloads should include preview hash")
+			"  Per Interface-Pack §1.9.1, args_hash should be canonical even when previews truncate")
+	}
+
+	expectedArgsHash, err := canonical.ArgsHash(map[string]any{"data": largeData})
+	if err != nil {
+		t.Fatalf("BUF-004 FAILED: Could not compute canonical args_hash: %v", err)
+	}
+	if argsHash != expectedArgsHash {
+		t.Errorf("BUF-004 FAILED: args_hash mismatch\n"+
+			"  Expected: %s\n"+
+			"  Got:      %s", expectedArgsHash, argsHash)
 	}
 
 	argsRaw, err := json.Marshal(map[string]any{"data": largeData})
@@ -263,28 +274,9 @@ func TestBUF004_RollingHashForTruncatedPayload(t *testing.T) {
 			"  Expected: %s\n"+
 			"  Got:      %s", expectedStreamHash, streamHash)
 	}
-
-	const maxPreviewSize = 1024
-	previewBytes := truncatedPreviewBytes(argsRaw, maxPreviewSize)
-	expectedPreviewHash := sha256Hex(previewBytes)
-	if argsHash != expectedPreviewHash {
-		t.Errorf("BUF-004 FAILED: args_hash mismatch for truncated preview\n"+
-			"  Expected: %s\n"+
-			"  Got:      %s", expectedPreviewHash, argsHash)
-	}
 }
 
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func truncatedPreviewBytes(data []byte, limit int) []byte {
-	if len(data) <= limit {
-		return data
-	}
-	preview := make([]byte, limit+len("..."))
-	copy(preview, data[:limit])
-	copy(preview[limit:], []byte("..."))
-	return preview
 }
