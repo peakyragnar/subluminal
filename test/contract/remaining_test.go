@@ -854,10 +854,7 @@ func adapterResultsForCall(t *testing.T, toolName string, args map[string]any, p
 func callShimAdapter(t *testing.T, toolName string, args map[string]any, policyJSON string) adapterCallResult {
 	t.Helper()
 
-	var env []string
-	if strings.TrimSpace(policyJSON) != "" {
-		env = append(env, "SUB_POLICY_JSON="+policyJSON)
-	}
+	env := []string{"SUB_POLICY_JSON=" + policyJSON}
 
 	h := testharness.NewTestHarness(testharness.HarnessConfig{
 		ShimPath: shimPath,
