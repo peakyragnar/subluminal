@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/subluminal/subluminal/pkg/event"
 )
@@ -37,6 +38,22 @@ func TestBuildExportEventsSummary(t *testing.T) {
 	}
 	if firstCall.Call.Seq != 1 {
 		t.Fatalf("expected first call seq=1, got %d", firstCall.Call.Seq)
+	}
+
+	firstCallEnd, ok := events[3].(event.ToolCallEndEvent)
+	if !ok {
+		t.Fatalf("expected first tool_call_end event, got %T", events[3])
+	}
+	startTS, err := parseTimestamp(firstCall.TS)
+	if err != nil {
+		t.Fatalf("parse start timestamp: %v", err)
+	}
+	endTS, err := parseTimestamp(firstCallEnd.TS)
+	if err != nil {
+		t.Fatalf("parse end timestamp: %v", err)
+	}
+	if endTS.Sub(startTS) != 10*time.Millisecond {
+		t.Fatalf("expected end timestamp to be 10ms after start, got %v", endTS.Sub(startTS))
 	}
 
 	end, ok := events[len(events)-1].(event.RunEndEvent)

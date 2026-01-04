@@ -444,8 +444,9 @@ func buildExportEvents(runRow exportRunRow, runInfo event.RunInfo, calls []expor
 		}
 
 		if strings.TrimSpace(call.Status) != "" {
+			endTS := computeToolCallEndTS(callTS, call.LatencyMS)
 			endEvent := event.ToolCallEndEvent{
-				Envelope: makeExportEnvelope(runRow, event.EventTypeToolCallEnd, callTS),
+				Envelope: makeExportEnvelope(runRow, event.EventTypeToolCallEnd, endTS),
 				Call: event.CallRef{
 					CallID:     call.CallID,
 					ServerName: call.ServerName,
@@ -557,9 +558,9 @@ func buildExportSummary(calls []exportToolCallRow, startedAt, endedAt string) ev
 		case string(event.DecisionAllow):
 			summary.CallsTotal++
 			summary.CallsAllowed++
-	case string(event.DecisionBlock), string(event.DecisionRejectWithHint), string(event.DecisionTerminateRun):
-		summary.CallsTotal++
-		summary.CallsBlocked++
+		case string(event.DecisionBlock), string(event.DecisionRejectWithHint), string(event.DecisionTerminateRun):
+			summary.CallsTotal++
+			summary.CallsBlocked++
 		case string(event.DecisionThrottle):
 			summary.CallsTotal++
 			summary.CallsThrottled++
@@ -573,6 +574,17 @@ func buildExportSummary(calls []exportToolCallRow, startedAt, endedAt string) ev
 
 	summary.DurationMS = computeDurationMS(startedAt, endedAt)
 	return summary
+}
+
+func computeToolCallEndTS(startedAt string, latencyMS int) string {
+	if latencyMS <= 0 {
+		return startedAt
+	}
+	startTime, err := parseTimestamp(startedAt)
+	if err != nil {
+		return startedAt
+	}
+	return startTime.Add(time.Duration(latencyMS) * time.Millisecond).Format(time.RFC3339Nano)
 }
 
 func computeDurationMS(startedAt, endedAt string) int {
