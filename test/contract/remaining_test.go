@@ -844,9 +844,10 @@ type adapterCallResult struct {
 func adapterResultsForCall(t *testing.T, toolName string, args map[string]any, policyJSON string) (adapterCallResult, adapterCallResult) {
 	t.Helper()
 
-	rawRequest := buildToolsCallRaw(t, 2, toolName, args)
 	shimResult := callShimAdapter(t, toolName, args, policyJSON)
-	mockResult := callMockAdapter(t, toolName, args, rawRequest, int64(2), policyJSON)
+	requestID := requestIDFromResponse(t, shimResult.Response)
+	rawRequest := buildToolsCallRaw(t, requestID, toolName, args)
+	mockResult := callMockAdapter(t, toolName, args, rawRequest, requestID, policyJSON)
 
 	return shimResult, mockResult
 }
@@ -981,7 +982,7 @@ func normalizeStartSnapshot(t *testing.T, start toolCallStartSnapshot) toolCallS
 	return start
 }
 
-func buildToolsCallRaw(t *testing.T, id int64, toolName string, args map[string]any) []byte {
+func buildToolsCallRaw(t *testing.T, id any, toolName string, args map[string]any) []byte {
 	t.Helper()
 
 	if args == nil {
@@ -1010,6 +1011,18 @@ func buildToolsCallRaw(t *testing.T, id int64, toolName string, args map[string]
 	}
 
 	return raw
+}
+
+func requestIDFromResponse(t *testing.T, resp *testharness.JSONRPCResponse) any {
+	t.Helper()
+
+	if resp == nil {
+		t.Fatal("ADAPT: missing JSON-RPC response to derive request id")
+	}
+	if resp.ID == nil {
+		t.Fatal("ADAPT: JSON-RPC response missing request id")
+	}
+	return resp.ID
 }
 
 func policyBundleFromJSON(t *testing.T, policyJSON string) policy.Bundle {
