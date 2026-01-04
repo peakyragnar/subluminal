@@ -26,6 +26,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -35,11 +36,13 @@ import (
 
 	"github.com/subluminal/subluminal/pkg/adapter/mcpstdio"
 	"github.com/subluminal/subluminal/pkg/core"
+	"github.com/subluminal/subluminal/pkg/policy"
 )
 
 func main() {
 	// Parse flags
 	serverName := flag.String("server-name", "", "Server name for events (required)")
+	watchPolicy := flag.Bool("watch", false, "Watch policy.yaml for changes")
 	flag.Parse()
 
 	// Validate required flags
@@ -73,10 +76,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	// Create proxy
 	proxy := mcpstdio.NewProxy(
 		upstream,
@@ -88,13 +87,59 @@ func main() {
 		os.Stdout,
 	)
 
+	reloadPolicy := func(reason string) {
+		compiled, err := policy.LoadCompiledBundleFile("policy.yaml")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Policy reload failed (%s): %v\n", reason, err)
+			return
+		}
+		updated := proxy.ReloadPolicy(compiled.Bundle)
+		fmt.Fprintf(os.Stderr, "Policy reloaded (%s): policy_id=%s policy_version=%s policy_hash=%s\n",
+			reason, updated.Info.PolicyID, updated.Info.PolicyVersion, updated.Info.PolicyHash)
+	}
+
+	var watchCancel context.CancelFunc
+	if *watchPolicy {
+		watchCtx, cancel := context.WithCancel(context.Background())
+		watchCancel = cancel
+		reloadPolicy("startup")
+		updates := policy.WatchBundleFile(watchCtx, "policy.yaml", time.Second)
+		go func() {
+			for update := range updates {
+				if update.Err != nil {
+					fmt.Fprintf(os.Stderr, "Policy reload failed (watch): %v\n", update.Err)
+					continue
+				}
+				updated := proxy.ReloadPolicy(update.Compiled.Bundle)
+				fmt.Fprintf(os.Stderr, "Policy reloaded (watch): policy_id=%s policy_version=%s policy_hash=%s\n",
+					updated.Info.PolicyID, updated.Info.PolicyVersion, updated.Info.PolicyHash)
+			}
+		}()
+	}
+	if watchCancel != nil {
+		defer watchCancel()
+	}
+
+	// Set up signal handling
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
 	// Handle signals in background
 	go func() {
-		sig := <-sigCh
-		// Forward signal to upstream
-		upstream.Signal(sig)
-		// Stop proxy
-		proxy.Stop()
+		for sig := range sigCh {
+			if sig == syscall.SIGHUP {
+				reloadPolicy("sighup")
+				continue
+			}
+			if watchCancel != nil {
+				watchCancel()
+			}
+			// Forward signal to upstream
+			upstream.Signal(sig)
+			// Stop proxy
+			proxy.Stop()
+			return
+		}
 	}()
 
 	// Run proxy (blocks until stdin EOF or signal)

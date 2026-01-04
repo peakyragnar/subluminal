@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/subluminal/subluminal/pkg/canonical"
 	"github.com/subluminal/subluminal/pkg/event"
@@ -155,4 +157,114 @@ func hashSnapshot(snapshot policySnapshot) (string, []byte, error) {
 	}
 	sum := sha256.Sum256(canonicalBytes)
 	return hex.EncodeToString(sum[:]), canonicalBytes, nil
+}
+
+// LoadCompiledBundleFile loads, validates, and compiles a bundle from disk.
+func LoadCompiledBundleFile(path string) (CompiledBundle, error) {
+	spec, err := LoadBundleFile(path)
+	if err != nil {
+		return CompiledBundle{}, err
+	}
+	if lintErrs := lintErrors(LintBundle(spec)); len(lintErrs) > 0 {
+		return CompiledBundle{}, fmt.Errorf("policy validation failed: %s", formatLintIssues(lintErrs))
+	}
+	return CompileBundle(spec)
+}
+
+func lintErrors(issues []LintIssue) []LintIssue {
+	var errs []LintIssue
+	for _, issue := range issues {
+		if strings.EqualFold(issue.Level, "error") {
+			errs = append(errs, issue)
+		}
+	}
+	return errs
+}
+
+func formatLintIssues(issues []LintIssue) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		field := strings.TrimSpace(issue.Field)
+		if field == "" {
+			field = "policy"
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", field, issue.Message))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// BundleWatcher polls for policy file changes.
+type BundleWatcher struct {
+	path        string
+	lastModTime time.Time
+	lastSize    int64
+}
+
+// BundleChange reports a compiled bundle or an error on reload.
+type BundleChange struct {
+	Compiled CompiledBundle
+	Err      error
+}
+
+// NewBundleWatcher creates a watcher for the given bundle path.
+func NewBundleWatcher(path string) *BundleWatcher {
+	return &BundleWatcher{path: path}
+}
+
+// Check reloads the bundle if the file has changed since the last check.
+func (w *BundleWatcher) Check() (CompiledBundle, bool, error) {
+	info, err := os.Stat(w.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			w.lastModTime = time.Time{}
+			w.lastSize = 0
+			return CompiledBundle{}, false, nil
+		}
+		return CompiledBundle{}, false, err
+	}
+
+	modTime := info.ModTime()
+	size := info.Size()
+	if modTime.Equal(w.lastModTime) && size == w.lastSize {
+		return CompiledBundle{}, false, nil
+	}
+
+	w.lastModTime = modTime
+	w.lastSize = size
+
+	compiled, err := LoadCompiledBundleFile(w.path)
+	if err != nil {
+		return CompiledBundle{}, true, err
+	}
+	return compiled, true, nil
+}
+
+// WatchBundleFile polls a bundle file and emits change events.
+func WatchBundleFile(ctx context.Context, path string, interval time.Duration) <-chan BundleChange {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	updates := make(chan BundleChange)
+	watcher := NewBundleWatcher(path)
+	go func() {
+		defer close(updates)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				compiled, changed, err := watcher.Check()
+				if !changed {
+					continue
+				}
+				updates <- BundleChange{Compiled: compiled, Err: err}
+			}
+		}
+	}()
+	return updates
 }

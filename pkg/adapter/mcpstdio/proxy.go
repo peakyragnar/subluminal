@@ -46,6 +46,7 @@ type Proxy struct {
 	serverName   string
 	policy       policy.Bundle
 	policyTarget policy.SelectorTarget
+	policyMu     sync.RWMutex
 
 	// I/O
 	agentIn  io.Reader
@@ -202,7 +203,8 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Start tracking
 	callState := p.state.StartCall(callID)
 
-	policyDecision := p.policy.DecideWithContext(policy.DecisionContext{
+	policyBundle := p.currentPolicy()
+	policyDecision := policyBundle.DecideWithContext(policy.DecisionContext{
 		ServerName: p.serverName,
 		ToolName:   toolName,
 		ArgsHash:   argsHash,
@@ -220,13 +222,13 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		},
 		BackoffMS: policyDecision.BackoffMS,
 		Hint:      sanitizeHint(policyDecision.Hint),
-		Policy:    p.policy.Info,
+		Policy:    policyBundle.Info,
 	}
 	if decision.Action == event.DecisionThrottle && decision.BackoffMS <= 0 {
 		decision.BackoffMS = defaultThrottleBackoffMS
 	}
 
-	enforced := p.policy.Mode != event.RunModeObserve
+	enforced := policyBundle.Mode != event.RunModeObserve
 	blocked := enforced && (decision.Action == event.DecisionBlock || decision.Action == event.DecisionTerminateRun)
 	throttled := enforced && decision.Action == event.DecisionThrottle
 	hinted := enforced && decision.Action == event.DecisionRejectWithHint
@@ -395,15 +397,31 @@ func (p *Proxy) makeEnvelope(eventType event.EventType) event.Envelope {
 }
 
 func (p *Proxy) emitRunStart() {
+	policyBundle := p.currentPolicy()
 	evt := event.RunStartEvent{
 		Envelope: p.makeEnvelope(event.EventTypeRunStart),
 		Run: event.RunInfo{
 			StartedAt: p.state.StartTime().UTC().Format(time.RFC3339Nano),
-			Mode:      p.policy.Mode,
-			Policy:    p.policy.Info,
+			Mode:      policyBundle.Mode,
+			Policy:    policyBundle.Info,
 		},
 	}
 	p.emitter.Emit(evt)
+}
+
+func (p *Proxy) currentPolicy() policy.Bundle {
+	p.policyMu.RLock()
+	defer p.policyMu.RUnlock()
+	return p.policy
+}
+
+// ReloadPolicy swaps the active policy bundle and resets stateful counters.
+func (p *Proxy) ReloadPolicy(next policy.Bundle) policy.Bundle {
+	p.policyMu.Lock()
+	updated := p.policy.Reload(next)
+	p.policy = updated
+	p.policyMu.Unlock()
+	return updated
 }
 
 func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int, args map[string]any, seq int) {
