@@ -200,8 +200,11 @@ for pr_num in "${PR_NUMS[@]}"; do
   echo "========================================"
 
   for ((round=1; round<=MAX_ROUNDS; round++)); do
+    # Disable errexit for review_pr since it uses exit codes as signals
+    set +e
     review_pr "$pr_num" "$round"
     result=$?
+    set -e
 
     if [[ $result -eq 0 ]]; then
       # LGTM or no changes
