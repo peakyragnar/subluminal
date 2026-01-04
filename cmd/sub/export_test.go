@@ -80,6 +80,23 @@ func TestBuildExportEventsSummary(t *testing.T) {
 	}
 }
 
+func TestBuildExportEventsWithoutRunEnd(t *testing.T) {
+	runRow, runInfo, calls := exportFixture(t)
+	runRow.Status = ""
+	runRow.EndedAt = ""
+
+	events, err := buildExportEvents(runRow, runInfo, calls)
+	if err != nil {
+		t.Fatalf("build export events: %v", err)
+	}
+	if len(events) != 7 {
+		t.Fatalf("expected 7 events, got %d", len(events))
+	}
+	if _, ok := events[len(events)-1].(event.RunEndEvent); ok {
+		t.Fatalf("expected no run_end event when run has not completed")
+	}
+}
+
 func TestWriteExportOutputJSONL(t *testing.T) {
 	events := exportEventsFixture(t)
 

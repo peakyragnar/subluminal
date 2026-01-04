@@ -465,6 +465,10 @@ func buildExportEvents(runRow exportRunRow, runInfo event.RunInfo, calls []expor
 		}
 	}
 
+	if strings.TrimSpace(runRow.Status) == "" || strings.TrimSpace(runRow.EndedAt) == "" {
+		return events, nil
+	}
+
 	endTS := firstNonEmpty(runRow.EndedAt, startTS)
 	summary := buildExportSummary(calls, startTS, endTS)
 	runEnd := event.RunEndEvent{
