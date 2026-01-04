@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/subluminal/subluminal/pkg/event"
 	"github.com/subluminal/subluminal/pkg/importer"
 	"github.com/subluminal/subluminal/pkg/ledger"
+	"github.com/subluminal/subluminal/pkg/policy"
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
 
@@ -691,57 +693,32 @@ func TestIMP002_TimeToFirstLogUnder5Minutes(t *testing.T) {
 }
 
 // =============================================================================
-// ADAPT-001: Adapter Provides Required Fields to Core
-// Contract: Adapter sends server_name, tool_name, args, bytes_in, transport
-//           to core; no protocol-specific data leaks.
-// Reference: Interface-Pack.md §7.1, Contract-Test-Checklist.md ADAPT-001
+// ADAPT-001: Adapter Tool Call Start Consistency
+// Contract: Same tool call via different adapters produces identical
+//           tool_call_start content.
+// Reference: Interface-Pack.md §7.4, Contract-Test-Checklist.md ADAPT-001
 // =============================================================================
 
-func TestADAPT001_AdapterProvidesRequiredFieldsToCore(t *testing.T) {
+func TestADAPT001_AdapterToolCallStartConsistent(t *testing.T) {
 	skipIfNoShim(t)
 
-	h := newShimHarness()
-	h.AddTool("adapter_test", "Test adapter fields", nil)
-
-	if err := h.Start(); err != nil {
-		t.Fatalf("Failed to start harness: %v", err)
-	}
-	defer h.Stop()
-
-	h.Initialize()
-	h.CallTool("adapter_test", map[string]any{"key": "value"})
-
-	// Assert: tool_call_start has all required adapter fields
-	toolCallStarts := h.EventSink.ByType("tool_call_start")
-	if len(toolCallStarts) == 0 {
-		t.Fatal("ADAPT-001 FAILED: No tool_call_start events")
+	toolName := "adapter_test"
+	args := map[string]any{
+		"alpha": "one",
+		"beta": map[string]any{
+			"z": 2,
+			"a": 1,
+		},
 	}
 
-	evt := toolCallStarts[0]
+	shimResult, mockResult := adapterResultsForCall(t, toolName, args, "")
 
-	// Check required fields from adapter (per §7.1)
-	requiredFields := []string{
-		"call.server_name",
-		"call.tool_name",
-		"call.args_hash", // Core computes from args
-		"call.bytes_in",
-		"call.transport",
-	}
+	assertStartSnapshotComplete(t, "shim", shimResult.Start)
+	assertStartSnapshotComplete(t, "mock", mockResult.Start)
 
-	for _, field := range requiredFields {
-		if !testharness.HasField(evt, field) {
-			t.Errorf("ADAPT-001 FAILED: Missing required field %q\n"+
-				"  Per Interface-Pack §7.1, adapter must provide this to core", field)
-		}
-	}
-
-	// Assert: transport is a known value
-	transport := testharness.GetString(evt, "call.transport")
-	validTransports := map[string]bool{
-		"mcp_stdio": true, "mcp_http": true, "http": true, "messages_api": true, "unknown": true,
-	}
-	if !validTransports[transport] {
-		t.Errorf("ADAPT-001 FAILED: Unknown transport %q", transport)
+	if !reflect.DeepEqual(shimResult.Start, mockResult.Start) {
+		t.Fatalf("ADAPT-001 FAILED: tool_call_start mismatch across adapters\n  shim=%+v\n  mock=%+v",
+			shimResult.Start, mockResult.Start)
 	}
 }
 
@@ -753,13 +730,27 @@ func TestADAPT001_AdapterProvidesRequiredFieldsToCore(t *testing.T) {
 // =============================================================================
 
 func TestADAPT002_CoreIsProtocolAgnostic(t *testing.T) {
-	t.Skip("ADAPT-002: Requires multiple adapter implementations to compare")
+	skipIfNoShim(t)
 
-	// This test would:
-	// 1. Call same tool via MCP stdio adapter
-	// 2. Call same tool via MCP HTTP adapter
-	// 3. Verify identical decisions
-	// 4. Verify identical args_hash
+	toolName := "adapter_test"
+	args := map[string]any{
+		"z": "last",
+		"a": 1,
+		"nested": map[string]any{
+			"b": true,
+			"a": false,
+		},
+	}
+
+	shimResult, mockResult := adapterResultsForCall(t, toolName, args, "")
+
+	if shimResult.Start.ArgsHash == "" || mockResult.Start.ArgsHash == "" {
+		t.Fatal("ADAPT-002 FAILED: args_hash missing from tool_call_start")
+	}
+	if shimResult.Start.ArgsHash != mockResult.Start.ArgsHash {
+		t.Fatalf("ADAPT-002 FAILED: args_hash mismatch across adapters\n  shim=%s\n  mock=%s",
+			shimResult.Start.ArgsHash, mockResult.Start.ArgsHash)
+	}
 }
 
 // =============================================================================
@@ -787,50 +778,278 @@ func TestADAPT003_AdapterFormatsErrorsCorrectly(t *testing.T) {
 		]
 	}`
 
+	toolName := "blocked_tool"
+
+	shimResult, mockResult := adapterResultsForCall(t, toolName, nil, policyJSON)
+
+	cases := []struct {
+		name string
+		resp *testharness.JSONRPCResponse
+	}{
+		{name: "shim", resp: shimResult.Response},
+		{name: "mock", resp: mockResult.Response},
+	}
+
+	for _, tc := range cases {
+		if tc.resp == nil {
+			t.Fatalf("ADAPT-003 FAILED: %s adapter did not return a response", tc.name)
+		}
+
+		wrapped := testharness.WrapResponse(tc.resp)
+		if wrapped.IsSuccess() {
+			t.Fatalf("ADAPT-003 FAILED: %s adapter should have been blocked by policy", tc.name)
+		}
+
+		if tc.resp.Error == nil {
+			t.Fatalf("ADAPT-003 FAILED: %s adapter response missing error field", tc.name)
+		}
+
+		subluminalCodes := map[int]bool{
+			-32081: true, // POLICY_BLOCKED
+			-32082: true, // POLICY_THROTTLED
+			-32083: true, // REJECT_WITH_HINT
+			-32084: true, // RUN_TERMINATED
+		}
+		if !subluminalCodes[tc.resp.Error.Code] {
+			t.Errorf("ADAPT-003 FAILED: %s adapter error code %d is not a Subluminal policy code",
+				tc.name, tc.resp.Error.Code)
+		}
+
+		if subluminalCodes[tc.resp.Error.Code] && !hasSubluminalData(tc.resp.Error.Data) {
+			t.Errorf("ADAPT-003 FAILED: %s adapter policy error missing error.data.subluminal", tc.name)
+		}
+	}
+}
+
+type toolCallStartSnapshot struct {
+	ServerName       string
+	ToolName         string
+	Transport        string
+	ArgsHash         string
+	BytesIn          int
+	Seq              int
+	PreviewTruncated bool
+	PreviewArgs      string
+}
+
+type adapterCallResult struct {
+	Start    toolCallStartSnapshot
+	Response *testharness.JSONRPCResponse
+}
+
+func adapterResultsForCall(t *testing.T, toolName string, args map[string]any, policyJSON string) (adapterCallResult, adapterCallResult) {
+	t.Helper()
+
+	rawRequest := buildToolsCallRaw(t, 2, toolName, args)
+	shimResult := callShimAdapter(t, toolName, args, policyJSON)
+	mockResult := callMockAdapter(t, toolName, args, rawRequest, int64(2), policyJSON)
+
+	return shimResult, mockResult
+}
+
+func callShimAdapter(t *testing.T, toolName string, args map[string]any, policyJSON string) adapterCallResult {
+	t.Helper()
+
+	var env []string
+	if strings.TrimSpace(policyJSON) != "" {
+		env = append(env, "SUB_POLICY_JSON="+policyJSON)
+	}
+
 	h := testharness.NewTestHarness(testharness.HarnessConfig{
 		ShimPath: shimPath,
-		ShimEnv:  []string{"SUB_POLICY_JSON=" + policyJSON},
+		ShimEnv:  env,
 	})
-	h.AddTool("blocked_tool", "A blocked tool", nil)
+	h.AddTool(toolName, "Adapter contract tool", nil)
 
 	if err := h.Start(); err != nil {
 		t.Fatalf("Failed to start harness: %v", err)
 	}
 	defer h.Stop()
 
-	h.Initialize()
-	resp, _ := h.CallTool("blocked_tool", nil)
-
-	wrapped := testharness.WrapResponse(resp)
-	if wrapped.IsSuccess() {
-		t.Fatal("ADAPT-003 FAILED: Tool should have been blocked by policy")
+	if err := h.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize harness: %v", err)
 	}
 
-	// Assert: Error is valid JSON-RPC format
-	if resp.Error == nil {
-		t.Fatal("ADAPT-003 FAILED: Response should have error field")
+	resp, err := h.CallTool(toolName, args)
+	if err != nil {
+		t.Fatalf("Failed to call tool: %v", err)
 	}
 
-	// Assert: Error code is a Subluminal code
-	subluminalCodes := map[int]bool{
-		-32081: true, // POLICY_BLOCKED
-		-32082: true, // POLICY_THROTTLED
-		-32083: true, // REJECT_WITH_HINT
-		-32084: true, // RUN_TERMINATED
-	}
-	if !subluminalCodes[resp.Error.Code] {
-		t.Logf("ADAPT-003: Error code %d is not a Subluminal policy code (may be upstream error)", resp.Error.Code)
+	if !h.EventSink.WaitForTypeCount(string(event.EventTypeToolCallStart), 1, 5*time.Second) {
+		t.Fatalf("ADAPT: tool_call_start event not captured in time")
 	}
 
-	// Assert: error.data.subluminal present if policy error
-	if resp.Error.Data != nil {
-		data, ok := resp.Error.Data.(map[string]any)
-		if ok {
-			if _, exists := data["subluminal"]; !exists && subluminalCodes[resp.Error.Code] {
-				t.Error("ADAPT-003 FAILED: Policy error should have error.data.subluminal")
-			}
-		}
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Failed to stop harness: %v", err)
 	}
+
+	toolCallStarts := h.EventSink.ByType(string(event.EventTypeToolCallStart))
+	if len(toolCallStarts) == 0 {
+		t.Fatal("ADAPT: No tool_call_start events")
+	}
+
+	return adapterCallResult{
+		Start:    snapshotFromCapturedStart(t, toolCallStarts[0]),
+		Response: resp,
+	}
+}
+
+func callMockAdapter(t *testing.T, toolName string, args map[string]any, rawRequest []byte, requestID any, policyJSON string) adapterCallResult {
+	t.Helper()
+
+	adapter := testharness.NewMockAdapter(testharness.MockAdapterConfig{
+		ServerName: "test",
+		Transport:  "mcp_stdio",
+		Identity: core.Identity{
+			RunID:   "mock-run",
+			AgentID: "mock-agent",
+			Client:  event.ClientClaude,
+			Env:     event.EnvCI,
+		},
+		Source: core.Source{
+			HostID: "mock-host",
+			ProcID: "mock-proc",
+			ShimID: "mock-shim",
+		},
+		Policy: policyBundleFromJSON(t, policyJSON),
+	})
+
+	result, err := adapter.HandleToolCall(testharness.MockToolCall{
+		ToolName:  toolName,
+		Args:      args,
+		BytesIn:   len(rawRequest),
+		RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("Failed to handle mock tool call: %v", err)
+	}
+
+	return adapterCallResult{
+		Start:    snapshotFromStartEvent(result.StartEvent),
+		Response: result.Response,
+	}
+}
+
+func snapshotFromCapturedStart(t *testing.T, evt testharness.CapturedEvent) toolCallStartSnapshot {
+	t.Helper()
+
+	return toolCallStartSnapshot{
+		ServerName:       testharness.GetString(evt, "call.server_name"),
+		ToolName:         testharness.GetString(evt, "call.tool_name"),
+		Transport:        testharness.GetString(evt, "call.transport"),
+		ArgsHash:         testharness.GetString(evt, "call.args_hash"),
+		BytesIn:          testharness.GetInt(evt, "call.bytes_in"),
+		Seq:              testharness.GetInt(evt, "call.seq"),
+		PreviewTruncated: testharness.GetBool(evt, "call.preview.truncated"),
+		PreviewArgs:      testharness.GetString(evt, "call.preview.args_preview"),
+	}
+}
+
+func snapshotFromStartEvent(evt event.ToolCallStartEvent) toolCallStartSnapshot {
+	return toolCallStartSnapshot{
+		ServerName:       evt.Call.ServerName,
+		ToolName:         evt.Call.ToolName,
+		Transport:        evt.Call.Transport,
+		ArgsHash:         evt.Call.ArgsHash,
+		BytesIn:          evt.Call.BytesIn,
+		Seq:              evt.Call.Seq,
+		PreviewTruncated: evt.Call.Preview.Truncated,
+		PreviewArgs:      evt.Call.Preview.ArgsPreview,
+	}
+}
+
+func buildToolsCallRaw(t *testing.T, id int64, toolName string, args map[string]any) []byte {
+	t.Helper()
+
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	params := map[string]any{
+		"name":      toolName,
+		"arguments": args,
+	}
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	req := testharness.JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  "tools/call",
+		Params:  paramsBytes,
+	}
+
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Failed to marshal JSON-RPC request: %v", err)
+	}
+
+	return raw
+}
+
+func policyBundleFromJSON(t *testing.T, policyJSON string) policy.Bundle {
+	t.Helper()
+
+	if strings.TrimSpace(policyJSON) == "" {
+		return policy.DefaultBundle()
+	}
+
+	spec, err := policy.ParseBundle([]byte(policyJSON))
+	if err != nil {
+		t.Fatalf("Failed to parse policy bundle: %v", err)
+	}
+
+	compiled, err := policy.CompileBundle(spec)
+	if err != nil {
+		t.Fatalf("Failed to compile policy bundle: %v", err)
+	}
+
+	return compiled.Bundle
+}
+
+func assertStartSnapshotComplete(t *testing.T, name string, start toolCallStartSnapshot) {
+	t.Helper()
+
+	if start.ServerName == "" {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter missing server_name", name)
+	}
+	if start.ToolName == "" {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter missing tool_name", name)
+	}
+	if start.ArgsHash == "" {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter missing args_hash", name)
+	}
+	if start.Transport == "" {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter missing transport", name)
+	}
+	if start.BytesIn <= 0 {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter bytes_in=%d, expected >0", name, start.BytesIn)
+	}
+	if start.Seq <= 0 {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter seq=%d, expected >0", name, start.Seq)
+	}
+
+	validTransports := map[string]bool{
+		"mcp_stdio": true, "mcp_http": true, "http": true, "messages_api": true, "unknown": true,
+	}
+	if !validTransports[start.Transport] {
+		t.Fatalf("ADAPT-001 FAILED: %s adapter unknown transport %q", name, start.Transport)
+	}
+}
+
+func hasSubluminalData(data any) bool {
+	if data == nil {
+		return false
+	}
+
+	payload, ok := data.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, exists := payload["subluminal"]
+	return exists
 }
 
 func writeTestConfig(t *testing.T, path string, config map[string]any) []byte {
