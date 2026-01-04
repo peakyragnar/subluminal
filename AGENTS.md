@@ -24,65 +24,65 @@ Inhibit your response: only take an action after all the above reasoning is comp
 
 Code review feedback filtering: Before implementing ANY code review feedback, apply scope filtering. 10.1) Identify which track (A/B/C/etc per Engineering_Rules.md §7.1) the feedback touches. 10.2) Check if that track is in scope for the current PR (per CI-Gating-Policy.md §10 checklist). 10.3) If feedback is IN SCOPE: implement the fix. 10.4) If feedback is OUT OF SCOPE: respond "Noted for [relevant milestone/track]" but DO NOT implement. 10.5) Out-of-scope feedback may reveal real gaps - capture as future work items, but do not act on them in the current PR. 10.6) This prevents building features out of order and ensures all changes are testable within the PR's declared scope.
 
-<!-- bv-agent-instructions-v1 -->
-
 ---
 
-## Beads Workflow Integration
+## GitHub Issues Workflow
 
-This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+This project uses GitHub Issues for task tracking, integrated with the `gh` CLI.
 
 ### Essential Commands
 
 ```bash
-# View issues (launches TUI - avoid in automated sessions)
-bv
+# Find ready work
+gh issue list --label "ready"              # Issues ready to work
+gh issue list --label "ready,agent-ok"     # Issues safe for autonomous agents
+gh issue list --assignee @me               # Your assigned issues
 
-# CLI commands for agents (use these instead)
-bd ready              # Show issues ready to work (no blockers)
-bd list --status=open # All open issues
-bd show <id>          # Full issue details with dependencies
-bd create --title="..." --type=task --priority=2
-bd update <id> --status=in_progress
-bd close <id> --reason="Completed"
-bd close <id1> <id2>  # Close multiple issues at once
-bd sync               # Commit and push changes
+# View issue details
+gh issue view 42                           # Full issue details
+
+# Create issues
+gh issue create --title "..." --label "task,P2"
+
+# Update status (via labels)
+gh issue edit 42 --add-label "in-progress" --remove-label "ready"
+
+# Close (or let PR auto-close with "Fixes #42")
+gh issue close 42
 ```
+
+### Label Taxonomy
+
+| Label | Purpose |
+|-------|---------|
+| `ready` | Unblocked, ready to work |
+| `in-progress` | Currently being worked |
+| `agent-ok` | Safe for autonomous agent to tackle |
+| `P0`-`P3` | Priority (P0=critical, P3=low) |
+| `bug`, `feature`, `task` | Type |
 
 ### Workflow Pattern
 
-1. **Start**: Run `bd ready` to find actionable work
-2. **Claim**: Use `bd update <id> --status=in_progress`
+1. **Start**: Run `gh issue list --label "ready"` to find actionable work
+2. **Claim**: `gh issue edit <num> --add-label "in-progress" --remove-label "ready"`
 3. **Work**: Implement the task
-4. **Complete**: Use `bd close <id>`
-5. **Sync**: Always run `bd sync` at session end
+4. **Complete**: Create PR with "Fixes #<num>" in body (auto-closes on merge)
 
-### Key Concepts
+### Agentic Automation
 
-- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
-- **Types**: task, bug, feature, epic, question, docs
-- **Blocking**: `bd dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-**Before ending any session, run this checklist:**
+Two scripts automate issue-to-PR workflows:
 
 ```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-bd sync                 # Commit beads changes
-git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
-git push                # Push to remote
+# Single issue: spawn agent in worktree, create PR
+./scripts/issue_pr.sh 42
+
+# Parallel pool: process all ready+agent-ok issues
+WORKERS=2 ./scripts/agent_pool.sh
 ```
 
 ### Best Practices
 
-- Check `bd ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `bd create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always `bd sync` before ending session
-
-<!-- end-bv-agent-instructions -->
+- Label issues `ready` when unblocked and well-defined
+- Label issues `agent-ok` only if they're safe for autonomous work
+- Use "Fixes #N" in PR descriptions for auto-close on merge
+- Keep issue descriptions clear and actionable

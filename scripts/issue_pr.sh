@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BEAD_ID="${1:-}"
-if [[ -z "$BEAD_ID" ]]; then
-  echo "Usage: $0 <bead-id>"
-  echo "Run this from within a worktree for the bead"
+ISSUE_NUM="${1:-}"
+if [[ -z "$ISSUE_NUM" ]]; then
+  echo "Usage: $0 <issue-number>"
+  echo "Run this from within a worktree for the issue"
   exit 1
 fi
 
@@ -23,11 +23,11 @@ mkdir -p "$GOCACHE" "$GOMODCACHE"
 
 LOG_DIR="$MAIN_REPO/.agent/logs"
 mkdir -p "$LOG_DIR"
-CI_LOG="$LOG_DIR/${BEAD_ID}.log"
+CI_LOG="$LOG_DIR/issue-${ISSUE_NUM}.log"
 
 RULES_FILE="$MAIN_REPO/docs/agent-runtime-rules.md"
 AGENT_RULES="\
-- Make the minimal correct change for the bead
+- Make the minimal correct change for the issue
 - Do not modify unrelated files
 - Do not push branches or create PRs (the outer script handles that)
 - If tests fail, fix the code unless tests are clearly wrong
@@ -100,44 +100,23 @@ print(hashlib.sha256(data).hexdigest())
 PY
 }
 
-get_bead_field() {
-  local id="$1"
-  local field="$2"
-  local default="$3"
-  
-  local json_output
-  if json_output="$(bd show "$id" --json 2>/dev/null)"; then
-    local value
-    value="$(echo "$json_output" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-if isinstance(data, list) and len(data) > 0:
-    print(data[0].get('$field', '$default'))
-elif isinstance(data, dict):
-    print(data.get('$field', '$default'))
-else:
-    print('$default')
-" 2>/dev/null)"
-    if [[ -n "$value" ]]; then
-      echo "$value"
-      return 0
-    fi
-  fi
-  echo "$default"
-}
+# Fetch issue details from GitHub
+ISSUE_JSON="$(gh issue view "$ISSUE_NUM" --json title,body)"
+TITLE="$(echo "$ISSUE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title','Issue $ISSUE_NUM'))" 2>/dev/null || echo "Issue #$ISSUE_NUM")"
+DESCRIPTION="$(echo "$ISSUE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('body',''))" 2>/dev/null || echo "")"
 
-TITLE="$(get_bead_field "$BEAD_ID" "title" "$BEAD_ID")"
-DESCRIPTION="$(get_bead_field "$BEAD_ID" "description" "")"
-
-echo "[bead_pr] Bead: $BEAD_ID"
-echo "[bead_pr] Title: $TITLE"
-echo "[bead_pr] Max iterations: $MAX_ITERS"
+echo "[issue_pr] Issue: #$ISSUE_NUM"
+echo "[issue_pr] Title: $TITLE"
+echo "[issue_pr] Max iterations: $MAX_ITERS"
 
 if [[ -n "$(git status --porcelain)" ]]; then
-  echo "[bead_pr] ERROR: Working tree has uncommitted changes"
+  echo "[issue_pr] ERROR: Working tree has uncommitted changes"
   git status --short
   exit 1
 fi
+
+# Mark issue as in-progress
+gh issue edit "$ISSUE_NUM" --add-label "in-progress" --remove-label "ready" 2>/dev/null || true
 
 FAIL_CONTEXT=""
 LAST_FAIL_SIG=""
@@ -146,7 +125,7 @@ REPEAT_FAILS=0
 for ((i=1; i<=MAX_ITERS; i++)); do
   echo ""
   echo "========================================"
-  echo "[bead_pr] Iteration $i/$MAX_ITERS"
+  echo "[issue_pr] Iteration $i/$MAX_ITERS"
   echo "========================================"
 
   PROMPT="You are implementing a task in a software repository.
@@ -164,7 +143,7 @@ $FAIL_CONTEXT
 ## Instructions
 Implement this task. When done, ensure ./scripts/ci.sh passes."
 
-  echo "[bead_pr] Running Codex..."
+  echo "[issue_pr] Running Codex..."
 
   CODEX_ARGS=(exec --full-auto)
   if [[ -n "$CODEX_MODEL" ]]; then
@@ -175,13 +154,13 @@ Implement this task. When done, ensure ./scripts/ci.sh passes."
   codex "${CODEX_ARGS[@]}" || true
 
   echo ""
-  echo "[bead_pr] Running CI..."
+  echo "[issue_pr] Running CI..."
   if "$MAIN_REPO/scripts/ci.sh" > "$CI_LOG" 2>&1; then
-    echo "[bead_pr] CI PASSED"
+    echo "[issue_pr] CI PASSED"
     FAIL_CONTEXT=""
     break
   else
-    echo "[bead_pr] CI FAILED (see $CI_LOG)"
+    echo "[issue_pr] CI FAILED (see $CI_LOG)"
     FAIL_SUMMARY="$(summarize_ci_log "$CI_LOG")"
     if [[ -z "$FAIL_SUMMARY" ]]; then
       FAIL_SUMMARY="(no CI output captured)"
@@ -196,9 +175,11 @@ Implement this task. When done, ensure ./scripts/ci.sh passes."
     fi
 
     if [[ "$REPEAT_FAILS" -ge 3 ]]; then
-      echo "[bead_pr] ERROR: Same failure repeated $REPEAT_FAILS times; stopping"
-      echo "[bead_pr] Failure summary:"
+      echo "[issue_pr] ERROR: Same failure repeated $REPEAT_FAILS times; stopping"
+      echo "[issue_pr] Failure summary:"
       echo "$FAIL_SUMMARY"
+      # Remove in-progress label on failure
+      gh issue edit "$ISSUE_NUM" --remove-label "in-progress" 2>/dev/null || true
       exit 4
     fi
 
@@ -212,33 +193,39 @@ Fix the issues and try again."
   fi
 
   if [[ "$i" -eq "$MAX_ITERS" ]]; then
-    echo "[bead_pr] ERROR: Max iterations reached without passing CI"
-    echo "[bead_pr] See logs: $CI_LOG"
+    echo "[issue_pr] ERROR: Max iterations reached without passing CI"
+    echo "[issue_pr] See logs: $CI_LOG"
+    # Remove in-progress label on failure
+    gh issue edit "$ISSUE_NUM" --remove-label "in-progress" 2>/dev/null || true
     exit 2
   fi
 done
 
 echo ""
-echo "[bead_pr] Committing changes..."
+echo "[issue_pr] Committing changes..."
 git add -A
 
 if git diff --cached --quiet; then
-  echo "[bead_pr] WARNING: No changes to commit"
+  echo "[issue_pr] WARNING: No changes to commit"
   exit 3
 fi
 
-git commit -m "$TITLE"
+git commit -m "$TITLE
 
-echo "[bead_pr] Pushing branch..."
+Fixes #$ISSUE_NUM"
+
+echo "[issue_pr] Pushing branch..."
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 git push -u origin "$BRANCH"
 
-echo "[bead_pr] Creating PR..."
+echo "[issue_pr] Creating PR..."
 gh pr create \
   --base "$BASE_BRANCH" \
   --head "$BRANCH" \
   --title "$TITLE" \
-  --body "$DESCRIPTION"
+  --body "Fixes #$ISSUE_NUM
+
+$DESCRIPTION"
 
 echo ""
-echo "[bead_pr] SUCCESS: PR created for $BEAD_ID"
+echo "[issue_pr] SUCCESS: PR created for issue #$ISSUE_NUM"
