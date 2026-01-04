@@ -112,13 +112,16 @@ Processes one issue in the current worktree:
 3. Runs Codex with issue context
 4. Runs CI (`./scripts/ci.sh`)
 5. If CI fails, feeds error summary back to Codex (up to MAX_ITERS times)
-6. On success: commits, pushes, creates PR with "Fixes #42"
-7. On failure: removes `in-progress` label, exits with error
+6. **Self-review**: Agent reviews its own changes, fixes issues found
+7. On success: commits, pushes, creates PR with "Fixes #42"
+8. On failure: removes `in-progress` label, exits with error
 
 **Environment variables:**
 - `MAX_ITERS` - Max agent iterations (default: 10)
 - `CODEX_MODEL` - Model to use (optional)
 - `BASE_BRANCH` - Target branch for PR (default: main)
+- `SELF_REVIEW` - Enable self-review before commit (default: 1)
+- `REVIEW_ROUNDS` - Max self-review iterations (default: 2)
 
 ### Parallel Pool: `agent_pool.sh`
 
@@ -196,6 +199,42 @@ WORKERS=4 MAX_ITERS=5 ./scripts/agent_pool.sh
             ┌─────────────────────────────────────────────────────────┐
             │                    Merge → Auto-close                   │
             └─────────────────────────────────────────────────────────┘
+```
+
+### PR Reviewer: `review_prs.sh`
+
+Reviews and fixes open PRs:
+
+```bash
+# Review all open PRs from issue_pr.sh
+./scripts/review_prs.sh
+
+# Review specific PR
+./scripts/review_prs.sh --pr=45
+
+# Limit review rounds
+./scripts/review_prs.sh --max-rounds=2
+```
+
+**What it does:**
+1. Lists open PRs (branches starting with `issue/`)
+2. For each PR: checks out branch, runs Codex review
+3. If issues found: fixes them, runs CI, pushes
+4. Repeats until LGTM or max rounds reached
+5. Returns to original branch
+
+**Environment variables:**
+- `MAX_ROUNDS` - Max review iterations per PR (default: 3)
+- `CODEX_MODEL` - Model to use (optional)
+- `LABELS` - Filter PRs by label (optional)
+
+**Typical flow:**
+```bash
+# After agent_pool.sh creates PRs
+./scripts/review_prs.sh
+
+# Or review as PRs come in
+./scripts/review_prs.sh --pr=45
 ```
 
 ## Best Practices
