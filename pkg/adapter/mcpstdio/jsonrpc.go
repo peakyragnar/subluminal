@@ -19,10 +19,10 @@ type JSONRPCRequest struct {
 
 // JSONRPCResponse represents a JSON-RPC 2.0 response.
 type JSONRPCResponse struct {
-	JSONRPC string         `json:"jsonrpc"`
-	ID      any            `json:"id"`
-	Result  any            `json:"result,omitempty"`
-	Error   *JSONRPCError  `json:"error,omitempty"`
+	JSONRPC string        `json:"jsonrpc"`
+	ID      any           `json:"id"`
+	Result  any           `json:"result,omitempty"`
+	Error   *JSONRPCError `json:"error,omitempty"`
 }
 
 // JSONRPCError represents a JSON-RPC 2.0 error object.
@@ -55,16 +55,27 @@ type ToolsCallParams struct {
 }
 
 // ParseToolsCallParams extracts tool name and arguments from a tools/call request.
-// Returns the tool name, arguments, and any error.
-func ParseToolsCallParams(params json.RawMessage) (string, map[string]any, error) {
-	var p ToolsCallParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return "", nil, err
+// Returns the tool name, arguments, raw arguments bytes, and any error.
+func ParseToolsCallParams(params json.RawMessage) (string, map[string]any, json.RawMessage, error) {
+	var raw struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
 	}
-	if p.Arguments == nil {
-		p.Arguments = make(map[string]any)
+	if err := json.Unmarshal(params, &raw); err != nil {
+		return "", nil, nil, err
 	}
-	return p.Name, p.Arguments, nil
+
+	var args map[string]any
+	if len(raw.Arguments) > 0 {
+		if err := json.Unmarshal(raw.Arguments, &args); err != nil {
+			return "", nil, nil, err
+		}
+	}
+	if args == nil {
+		args = make(map[string]any)
+	}
+
+	return raw.Name, args, raw.Arguments, nil
 }
 
 // IsToolsCall returns true if the request is a tools/call method.

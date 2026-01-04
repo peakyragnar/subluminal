@@ -88,14 +88,15 @@ type Preview struct {
 // CallInfo contains tool call metadata.
 // Per Interface-Pack §1.5
 type CallInfo struct {
-	CallID     string  `json:"call_id"`     // Unique within run
-	ServerName string  `json:"server_name"` // Exact upstream server name
-	ToolName   string  `json:"tool_name"`   // Exact upstream tool name
-	Transport  string  `json:"transport"`   // "mcp_stdio" | "mcp_http" | "http" | "unknown"
-	ArgsHash   string  `json:"args_hash"`   // SHA-256 of canonical args
-	BytesIn    int     `json:"bytes_in"`    // Size of request message
-	Preview    Preview `json:"preview"`     // Truncated preview
-	Seq        int     `json:"seq"`         // Monotonic call index (starts at 1)
+	CallID         string  `json:"call_id"`                    // Unique within run
+	ServerName     string  `json:"server_name"`                // Exact upstream server name
+	ToolName       string  `json:"tool_name"`                  // Exact upstream tool name
+	Transport      string  `json:"transport"`                  // "mcp_stdio" | "mcp_http" | "http" | "unknown"
+	ArgsHash       string  `json:"args_hash"`                  // SHA-256 of canonical args
+	ArgsStreamHash string  `json:"args_stream_hash,omitempty"` // SHA-256 of raw args bytes (oversized payloads)
+	BytesIn        int     `json:"bytes_in"`                   // Size of request message
+	Preview        Preview `json:"preview"`                    // Truncated preview
+	Seq            int     `json:"seq"`                        // Monotonic call index (starts at 1)
 }
 
 // ToolCallStartEvent represents a tool call initiation.

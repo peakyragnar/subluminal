@@ -16,6 +16,9 @@ package mcpstdio
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"sync"
@@ -27,7 +30,12 @@ import (
 	"github.com/subluminal/subluminal/pkg/policy"
 )
 
-const defaultThrottleBackoffMS = 1000
+const (
+	defaultThrottleBackoffMS = 1000
+	maxPreviewSize           = 1024
+	maxInspectBytes          = 1024 * 1024
+	streamHashChunkSize      = 32 * 1024
+)
 
 // Proxy handles bidirectional JSON-RPC proxying with event emission.
 type Proxy struct {
@@ -187,14 +195,24 @@ func (p *Proxy) readFromAgent() {
 // interceptToolCall processes a tools/call request and emits events.
 func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	// Parse params
-	toolName, args, err := ParseToolsCallParams(req.Params)
+	toolName, args, argsRaw, err := ParseToolsCallParams(req.Params)
 	if err != nil {
 		// Can't parse - still forward, just don't emit events
 		return true
 	}
 
-	// Compute args_hash
-	argsHash, _ := canonical.ArgsHash(args)
+	argsRaw = normalizeArgsRaw(argsRaw)
+	preview, previewBytes, inspectTruncated := buildArgsPreview(argsRaw)
+
+	// Compute args_hash (canonical for inspectable payloads, preview hash otherwise)
+	argsHash := ""
+	argsStreamHash := ""
+	if inspectTruncated {
+		argsHash = hashBytesHex(previewBytes)
+		argsStreamHash = hashStreamHex(argsRaw)
+	} else {
+		argsHash, _ = canonical.ArgsHash(args)
+	}
 
 	// Generate call_id
 	callID := core.GenerateUUID()
@@ -244,7 +262,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 	}
 
 	// Emit tool_call_start
-	p.emitToolCallStart(callID, toolName, argsHash, len(rawLine), args, callState.Seq)
+	p.emitToolCallStart(callID, toolName, argsHash, argsStreamHash, len(rawLine), preview, callState.Seq)
 
 	// Emit tool_call_decision
 	p.emitToolCallDecision(callID, toolName, argsHash, decision)
@@ -406,51 +424,19 @@ func (p *Proxy) emitRunStart() {
 	p.emitter.Emit(evt)
 }
 
-func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int, args map[string]any, seq int) {
-	// Create preview (truncated args)
-	// Per Interface-Pack §1.10:
-	// - For small payloads: include full preview
-	// - For medium payloads (>1KB but <1MiB): include truncated preview with "..."
-	// - For large payloads (>1MiB): omit preview entirely, set truncated=true
-	const maxPreviewSize = 1024
-	const maxInspectBytes = 1024 * 1024 // 1 MiB
-
-	argsPreview := ""
-	truncated := false
-
-	if args != nil {
-		if b, err := json.Marshal(args); err == nil {
-			originalLen := len(b)
-			if originalLen > maxInspectBytes {
-				// Very large payload - omit preview
-				argsPreview = ""
-				truncated = true
-			} else if originalLen > maxPreviewSize {
-				// Medium payload - truncate with "..."
-				argsPreview = string(b[:maxPreviewSize]) + "..."
-				truncated = true
-			} else {
-				// Small payload - full preview
-				argsPreview = string(b)
-				truncated = false
-			}
-		}
-	}
-
+func (p *Proxy) emitToolCallStart(callID, toolName, argsHash, argsStreamHash string, bytesIn int, preview event.Preview, seq int) {
 	evt := event.ToolCallStartEvent{
 		Envelope: p.makeEnvelope(event.EventTypeToolCallStart),
 		Call: event.CallInfo{
-			CallID:     callID,
-			ServerName: p.serverName,
-			ToolName:   toolName,
-			Transport:  "mcp_stdio",
-			ArgsHash:   argsHash,
-			BytesIn:    bytesIn,
-			Preview: event.Preview{
-				Truncated:   truncated,
-				ArgsPreview: argsPreview,
-			},
-			Seq: seq,
+			CallID:         callID,
+			ServerName:     p.serverName,
+			ToolName:       toolName,
+			Transport:      "mcp_stdio",
+			ArgsHash:       argsHash,
+			ArgsStreamHash: argsStreamHash,
+			BytesIn:        bytesIn,
+			Preview:        preview,
+			Seq:            seq,
 		},
 	}
 	p.emitter.Emit(evt)
@@ -582,4 +568,57 @@ func normalizeID(id any) any {
 	default:
 		return id
 	}
+}
+
+func normalizeArgsRaw(argsRaw []byte) []byte {
+	trimmed := bytes.TrimSpace(argsRaw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return []byte("{}")
+	}
+	return argsRaw
+}
+
+func buildArgsPreview(argsRaw []byte) (event.Preview, []byte, bool) {
+	preview := event.Preview{}
+	size := len(argsRaw)
+
+	previewBytes := argsRaw
+	if size > maxPreviewSize {
+		previewBytes = make([]byte, maxPreviewSize+len("..."))
+		copy(previewBytes, argsRaw[:maxPreviewSize])
+		copy(previewBytes[maxPreviewSize:], []byte("..."))
+	}
+
+	inspectTruncated := size > maxInspectBytes
+	if inspectTruncated {
+		preview.Truncated = true
+		preview.ArgsPreview = ""
+		return preview, previewBytes, true
+	}
+	if size > maxPreviewSize {
+		preview.Truncated = true
+		preview.ArgsPreview = string(previewBytes)
+		return preview, previewBytes, false
+	}
+
+	preview.Truncated = false
+	preview.ArgsPreview = string(argsRaw)
+	return preview, previewBytes, false
+}
+
+func hashBytesHex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func hashStreamHex(data []byte) string {
+	hasher := sha256.New()
+	for offset := 0; offset < len(data); offset += streamHashChunkSize {
+		end := offset + streamHashChunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		_, _ = hasher.Write(data[offset:end])
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }
