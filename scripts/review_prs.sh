@@ -44,13 +44,15 @@ get_open_prs() {
     return
   fi
 
-  local label_filter=""
-  if [[ -n "$LABELS" ]]; then
-    label_filter="--label $LABELS"
-  fi
-
   # Get PRs created by issue_pr.sh (branches starting with issue/)
-  gh pr list --state open --head "issue/*" $label_filter --json number -q '.[].number' 2>/dev/null | head -20
+  # Filter in jq since gh CLI doesn't support glob in --head
+  local jq_filter='.[] | select(.headRefName | startswith("issue/")) | .number'
+
+  if [[ -n "$LABELS" ]]; then
+    gh pr list --state open --label "$LABELS" --json number,headRefName -q "$jq_filter" 2>/dev/null | head -20
+  else
+    gh pr list --state open --json number,headRefName -q "$jq_filter" 2>/dev/null | head -20
+  fi
 }
 
 review_pr() {
