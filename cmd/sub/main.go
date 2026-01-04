@@ -30,6 +30,8 @@ func run(args []string) int {
 		return runTail(args[1:])
 	case "query":
 		return runQuery(args[1:])
+	case "export":
+		return runExport(args[1:])
 	case "doctor":
 		return runDoctor(args[1:])
 	case "version":
@@ -46,6 +48,6 @@ func run(args []string) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: sub <command> [options]")
-	fmt.Fprintln(os.Stderr, "Commands: import, restore, ledgerd, policy, run, tail, query, doctor, version")
+	fmt.Fprintln(os.Stderr, "Commands: import, restore, ledgerd, policy, run, tail, query, export, doctor, version")
 	fmt.Fprintln(os.Stderr, "Clients: claude, codex, headless, custom")
 }
