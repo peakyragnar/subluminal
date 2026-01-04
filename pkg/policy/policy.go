@@ -283,6 +283,19 @@ func DefaultBundle() Bundle {
 	}
 }
 
+// Reload returns a new bundle based on next with stateful counters reset.
+func (b *Bundle) Reload(next Bundle) Bundle {
+	next.breakerMu = sync.Mutex{}
+	next.breakerState = make(map[string][]time.Time)
+	next.budgets = newBudgetState()
+	next.rateLimit = newRateLimitState()
+	next.dedupe = newDedupeCache()
+	if next.Mode == "" {
+		next.Mode = event.RunModeObserve
+	}
+	return next
+}
+
 func (b *Bundle) Decide(serverName, toolName, argsHash string) Decision {
 	return b.DecideWithContext(DecisionContext{
 		ServerName: serverName,

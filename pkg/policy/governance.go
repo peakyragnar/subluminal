@@ -77,14 +77,18 @@ func LintBundle(spec BundleSpec) []LintIssue {
 			}
 		}
 
-		for _, pattern := range rule.Match.ServerName.Regex {
-			if _, err := regexp.Compile(pattern); err != nil {
-				issues = append(issues, LintIssue{Level: "error", Field: ruleField + ".match.server_name.regex", Message: err.Error()})
+		if rule.Match.ServerName != nil {
+			for _, pattern := range rule.Match.ServerName.Regex {
+				if _, err := regexp.Compile(pattern); err != nil {
+					issues = append(issues, LintIssue{Level: "error", Field: ruleField + ".match.server_name.regex", Message: err.Error()})
+				}
 			}
 		}
-		for _, pattern := range rule.Match.ToolName.Regex {
-			if _, err := regexp.Compile(pattern); err != nil {
-				issues = append(issues, LintIssue{Level: "error", Field: ruleField + ".match.tool_name.regex", Message: err.Error()})
+		if rule.Match.ToolName != nil {
+			for _, pattern := range rule.Match.ToolName.Regex {
+				if _, err := regexp.Compile(pattern); err != nil {
+					issues = append(issues, LintIssue{Level: "error", Field: ruleField + ".match.tool_name.regex", Message: err.Error()})
+				}
 			}
 		}
 
