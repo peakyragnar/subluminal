@@ -109,19 +109,79 @@ func runPolicyDiff(args []string) int {
 	}
 
 	result := policy.DiffBundles(oldSpec, newSpec)
-	if !*jsonOnly {
-		fmt.Fprintf(os.Stderr, "Severity: %s\n", result.Severity)
-		fmt.Fprintf(os.Stderr, "Summary: %s\n", result.Summary)
-		for _, change := range result.Changes {
-			if change.RuleID != "" {
-				fmt.Fprintf(os.Stderr, "- [%s] %s (%s)\n", change.Severity, change.Summary, change.RuleID)
+	hasChanges := len(result.Changes) > 0
+	if *jsonOnly {
+		if emitJSON(result) != 0 {
+			return 1
+		}
+		if hasChanges {
+			return 1
+		}
+		return 0
+	}
+
+	if !hasChanges {
+		fmt.Fprintln(os.Stderr, "No policy changes.")
+		return 0
+	}
+
+	added, removed, changed, metadata := splitPolicyDiffChanges(result.Changes)
+	printedSection := false
+	if len(added) > 0 {
+		printedSection = printPolicyDiffSection("Rules added:", printedSection)
+		for _, change := range added {
+			rule, ok := change.After.(policy.Rule)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "  + %s\n", change.RuleID)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "- [%s] %s\n", change.Severity, change.Summary)
+			fmt.Fprintf(os.Stderr, "  + %s\n", ruleLabel(rule))
+			fmt.Fprint(os.Stderr, formatRuleDetails(rule, "    "))
+		}
+	}
+	if len(removed) > 0 {
+		printedSection = printPolicyDiffSection("Rules removed:", printedSection)
+		for _, change := range removed {
+			rule, ok := change.Before.(policy.Rule)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "  - %s\n", change.RuleID)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  - %s\n", ruleLabel(rule))
+			fmt.Fprint(os.Stderr, formatRuleDetails(rule, "    "))
+		}
+	}
+	if len(changed) > 0 {
+		printedSection = printPolicyDiffSection("Rules changed:", printedSection)
+		for _, change := range changed {
+			rule, ok := change.After.(policy.Rule)
+			if !ok {
+				rule, ok = change.Before.(policy.Rule)
+			}
+			if ok {
+				fmt.Fprintf(os.Stderr, "  ~ %s\n", ruleLabel(rule))
+			} else if change.RuleID != "" {
+				fmt.Fprintf(os.Stderr, "  ~ %s\n", change.RuleID)
+			} else {
+				fmt.Fprintln(os.Stderr, "  ~ rule modified")
+			}
+			if len(change.Fields) == 0 {
+				fmt.Fprintln(os.Stderr, "    - (details unavailable)")
+				continue
+			}
+			for _, field := range change.Fields {
+				fmt.Fprintf(os.Stderr, "    - %s: %s -> %s\n", field.Field, formatDiffValue(field.Before), formatDiffValue(field.After))
+			}
+		}
+	}
+	if len(metadata) > 0 {
+		printedSection = printPolicyDiffSection("Policy metadata changes:", printedSection)
+		for _, change := range metadata {
+			fmt.Fprintf(os.Stderr, "  - %s\n", formatMetadataChange(change))
 		}
 	}
 
-	return emitJSON(result)
+	return 1
 }
 
 func runPolicyExplain(args []string) int {
@@ -253,4 +313,70 @@ func emitJSON(value any) int {
 	}
 	fmt.Fprintln(os.Stdout, string(payload))
 	return 0
+}
+
+func splitPolicyDiffChanges(changes []policy.DiffChange) (added, removed, modified, metadata []policy.DiffChange) {
+	for _, change := range changes {
+		switch change.Kind {
+		case "rule_added":
+			added = append(added, change)
+		case "rule_removed":
+			removed = append(removed, change)
+		case "rule_modified":
+			modified = append(modified, change)
+		default:
+			metadata = append(metadata, change)
+		}
+	}
+	return added, removed, modified, metadata
+}
+
+func printPolicyDiffSection(title string, printed bool) bool {
+	if printed {
+		fmt.Fprintln(os.Stderr)
+	}
+	fmt.Fprintln(os.Stderr, title)
+	return true
+}
+
+func ruleLabel(rule policy.Rule) string {
+	kind := strings.ToLower(strings.TrimSpace(rule.Kind))
+	if kind == "" {
+		kind = "rule"
+	}
+	ruleID := strings.TrimSpace(rule.RuleID)
+	if ruleID == "" {
+		return kind
+	}
+	return fmt.Sprintf("%s:%s", kind, ruleID)
+}
+
+func formatRuleDetails(rule policy.Rule, indent string) string {
+	payload, err := json.MarshalIndent(rule, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%serror formatting rule: %v\n", indent, err)
+	}
+	lines := strings.Split(string(payload), "\n")
+	for i, line := range lines {
+		lines[i] = indent + line
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func formatDiffValue(value any) string {
+	if value == nil {
+		return "null"
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(payload)
+}
+
+func formatMetadataChange(change policy.DiffChange) string {
+	if change.Field == "" {
+		return change.Summary
+	}
+	return fmt.Sprintf("%s: %s -> %s", change.Field, formatDiffValue(change.Before), formatDiffValue(change.After))
 }
