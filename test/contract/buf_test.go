@@ -5,12 +5,15 @@
 package contract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/subluminal/subluminal/pkg/canonical"
 	"github.com/subluminal/subluminal/pkg/testharness"
 )
 
@@ -238,16 +241,42 @@ func TestBUF004_RollingHashForTruncatedPayload(t *testing.T) {
 	evt := toolCallStarts[0]
 
 	// Assert: args_stream_hash is present for truncated payload
-	if !testharness.HasField(evt, "call.args_stream_hash") {
-		t.Skip("BUF-004: args_stream_hash not implemented (P1 feature)")
-	}
-
 	streamHash := testharness.GetString(evt, "call.args_stream_hash")
 	if streamHash == "" {
 		t.Error("BUF-004 FAILED: args_stream_hash is empty\n" +
 			"  Per Interface-Pack §1.9.2, truncated payloads should include rolling hash")
 	}
 
-	// Note: To fully verify, we'd need the golden hash of the raw bytes
-	// This test just verifies the field exists and is non-empty
+	argsHash := testharness.GetString(evt, "call.args_hash")
+	if argsHash == "" {
+		t.Error("BUF-004 FAILED: args_hash is empty\n" +
+			"  Per Interface-Pack §1.9.1, args_hash should be canonical even when previews truncate")
+	}
+
+	expectedArgsHash, err := canonical.ArgsHash(map[string]any{"data": largeData})
+	if err != nil {
+		t.Fatalf("BUF-004 FAILED: Could not compute canonical args_hash: %v", err)
+	}
+	if argsHash != expectedArgsHash {
+		t.Errorf("BUF-004 FAILED: args_hash mismatch\n"+
+			"  Expected: %s\n"+
+			"  Got:      %s", expectedArgsHash, argsHash)
+	}
+
+	argsRaw, err := json.Marshal(map[string]any{"data": largeData})
+	if err != nil {
+		t.Fatalf("BUF-004 FAILED: Could not marshal args: %v", err)
+	}
+
+	expectedStreamHash := sha256Hex(argsRaw)
+	if streamHash != expectedStreamHash {
+		t.Errorf("BUF-004 FAILED: args_stream_hash mismatch\n"+
+			"  Expected: %s\n"+
+			"  Got:      %s", expectedStreamHash, streamHash)
+	}
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
