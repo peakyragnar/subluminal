@@ -348,11 +348,14 @@ func TestEVT006_ToolServerNamePreservation(t *testing.T) {
 	h.Driver.ListTools()
 	h.CallTool(toolName, map[string]any{"title": "Test issue"})
 
+	// Wait for events to arrive (fixes race condition on slower systems like macOS CI)
+	if !h.EventSink.WaitForTypeCount("tool_call_start", 1, 2*time.Second) {
+		toolCallStarts := h.EventSink.ByType("tool_call_start")
+		t.Fatalf("EVT-006 FAILED: Expected at least 1 tool_call_start event, got %d", len(toolCallStarts))
+	}
+
 	// Assert: Events show exact tool_name unchanged
 	toolCallStarts := h.EventSink.ByType("tool_call_start")
-	if len(toolCallStarts) == 0 {
-		t.Fatal("EVT-006 FAILED: No tool_call_start events")
-	}
 
 	for _, evt := range toolCallStarts {
 		actualToolName := testharness.GetString(evt, "call.tool_name")
