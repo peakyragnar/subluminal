@@ -55,6 +55,58 @@ get_open_prs() {
   fi
 }
 
+# Check GitHub Actions status for a PR
+# Returns: 0=all passed, 1=some failed, 2=pending/in-progress
+check_gh_actions() {
+  local pr_num="$1"
+  local checks_json
+  checks_json="$(gh pr checks "$pr_num" --json name,state,conclusion 2>/dev/null)" || return 2
+
+  local failed pending
+  failed="$(echo "$checks_json" | jq -r '[.[] | select(.conclusion == "failure")] | length')"
+  pending="$(echo "$checks_json" | jq -r '[.[] | select(.state == "pending" or .state == "in_progress" or .state == "queued")] | length')"
+
+  if [[ "$failed" -gt 0 ]]; then
+    return 1
+  elif [[ "$pending" -gt 0 ]]; then
+    return 2
+  else
+    return 0
+  fi
+}
+
+# Wait for GitHub Actions to complete (with timeout)
+wait_for_gh_actions() {
+  local pr_num="$1"
+  local timeout="${2:-300}"  # Default 5 minutes
+  local interval=15
+  local elapsed=0
+
+  echo "[review] Waiting for GitHub Actions to complete..."
+
+  while [[ $elapsed -lt $timeout ]]; do
+    check_gh_actions "$pr_num"
+    local status=$?
+
+    if [[ $status -eq 0 ]]; then
+      echo "[review] GitHub Actions: all checks passed"
+      return 0
+    elif [[ $status -eq 1 ]]; then
+      echo "[review] GitHub Actions: some checks failed"
+      gh pr checks "$pr_num" 2>/dev/null | grep -E "fail|❌" | head -5
+      return 1
+    fi
+
+    # Still pending
+    sleep $interval
+    elapsed=$((elapsed + interval))
+    echo "[review] GitHub Actions: still running... (${elapsed}s/${timeout}s)"
+  done
+
+  echo "[review] GitHub Actions: timeout waiting for checks"
+  return 2
+}
+
 review_pr() {
   local pr_num="$1"
   local round="$2"
@@ -84,6 +136,24 @@ review_pr() {
   local files
   files="$(gh pr view "$pr_num" --json files -q '.files[].path' | tr '\n' ' ')"
 
+  # Check GitHub Actions status
+  local gh_actions_status=""
+  local checks_json
+  checks_json="$(gh pr checks "$pr_num" --json name,state,conclusion 2>/dev/null)" || true
+  if [[ -n "$checks_json" ]]; then
+    local failed_checks
+    failed_checks="$(echo "$checks_json" | jq -r '.[] | select(.conclusion == "failure") | "- \(.name): FAILED"' 2>/dev/null)" || true
+    if [[ -n "$failed_checks" ]]; then
+      gh_actions_status="
+## GitHub Actions Status (FAILING)
+The following CI checks have FAILED. You MUST investigate and fix these:
+$failed_checks
+
+To see full failure logs: gh pr checks $pr_num --web
+"
+    fi
+  fi
+
   # Build review prompt
   local prompt="You are reviewing a pull request.
 
@@ -97,7 +167,7 @@ $files
 \`\`\`diff
 $diff
 \`\`\`
-
+$gh_actions_status
 ## Instructions
 Review this PR for:
 1. **Correctness**: Logic errors, edge cases, potential bugs
@@ -157,8 +227,23 @@ Co-Authored-By: Codex <noreply@openai.com>"
       echo "[review] Pushing fixes..."
       git push origin "$branch"
 
-      echo "[review] PR #$pr_num: Fixes pushed"
-      return 2  # Signal that fixes were made
+      # Wait for GitHub Actions to complete after pushing
+      echo "[review] Waiting for GitHub Actions after push..."
+      wait_for_gh_actions "$pr_num" 300
+      gh_status=$?
+
+      if [[ $gh_status -eq 0 ]]; then
+        echo "[review] PR #$pr_num: Fixes pushed and GitHub Actions passed"
+        return 0  # All good, no more review needed
+      elif [[ $gh_status -eq 1 ]]; then
+        echo "[review] PR #$pr_num: GitHub Actions failed after fixes"
+        # Get failed check details for next review round
+        gh pr checks "$pr_num" 2>/dev/null | grep -E "fail|❌" | head -5
+        return 2  # Signal that more fixes are needed
+      else
+        echo "[review] PR #$pr_num: Fixes pushed (GitHub Actions still pending/timeout)"
+        return 2  # Continue to next round to check again
+      fi
     else
       echo "[review] CI failed after review fixes"
       echo "[review] See: $LOG_DIR/review-ci-${pr_num}.log"
