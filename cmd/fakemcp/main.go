@@ -10,6 +10,7 @@
 //	./fakemcp --echo                 # Echo mode: return args as result
 //	./fakemcp --crash-on=toolname    # Exit(1) when toolname is called (simulate crash)
 //	./fakemcp --error-on=toolname    # Return JSON-RPC error when toolname is called
+//	./fakemcp --require-env=VAR      # Require env var(s) for tool calls
 //
 // The server reads JSON-RPC from stdin and writes responses to stdout.
 // It responds to: initialize, tools/list, tools/call
@@ -34,6 +35,7 @@ func main() {
 	measureSize := flag.Bool("measure-size", false, "Measure-size mode: return {\"bytes_received\": N} where N is the JSON size of args")
 	crashOn := flag.String("crash-on", "", "Exit immediately when this tool is called (simulate crash)")
 	errorOn := flag.String("error-on", "", "Return error when this tool is called (comma-separated)")
+	requireEnv := flag.String("require-env", "", "Require env vars for tool calls (comma-separated)")
 	flag.Parse()
 
 	// Parse error-on tools into a set
@@ -46,6 +48,15 @@ func main() {
 
 	// Create server
 	server := testharness.NewFakeMCPServer()
+	if *requireEnv != "" {
+		for _, name := range strings.Split(*requireEnv, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			server.RequireEnv = append(server.RequireEnv, name)
+		}
+	}
 
 	// Parse tool names
 	toolNames := strings.Split(*toolsFlag, ",")
