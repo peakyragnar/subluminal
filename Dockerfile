@@ -10,10 +10,13 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags "-s -w -X main.version=${VERSION}" -o /out/sub ./cmd/sub
 
-FROM gcr.io/distroless/static:nonroot
+FROM alpine:3.19
+
+# Install sqlite3 CLI (required for ledger commands)
+RUN apk add --no-cache sqlite
 
 COPY --from=builder /out/sub /usr/local/bin/sub
 
-USER nonroot:nonroot
+USER nobody:nobody
 
 ENTRYPOINT ["/usr/local/bin/sub"]

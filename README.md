@@ -5,14 +5,22 @@ policy, and records an auditable ledger.
 
 ## Install
 
-### Homebrew
+### From Source
 
 ```bash
-brew install subluminal/tap/sub
+go install github.com/peakyragnar/subluminal/cmd/sub@latest
+```
+
+### Homebrew (from repo)
+
+```bash
+# Clone and install from local formula
+git clone https://github.com/peakyragnar/subluminal.git
+brew install --HEAD --formula subluminal/Formula/sub.rb
 ```
 
 ### Docker
 
 ```bash
-docker run --rm subluminal/sub:<version> version
+docker run --rm ghcr.io/peakyragnar/subluminal:latest version
 ```
