@@ -12,6 +12,7 @@ class Sub < Formula
   # version "0.1.0"
 
   depends_on "go" => :build
+  uses_from_macos "sqlite"
 
   def install
     # Determine version from git or use placeholder
