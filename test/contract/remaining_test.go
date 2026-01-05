@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/core"
-	"github.com/subluminal/subluminal/pkg/event"
-	"github.com/subluminal/subluminal/pkg/importer"
-	"github.com/subluminal/subluminal/pkg/ledger"
-	"github.com/subluminal/subluminal/pkg/testharness"
+	"github.com/peakyragnar/subluminal/pkg/core"
+	"github.com/peakyragnar/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/importer"
+	"github.com/peakyragnar/subluminal/pkg/ledger"
+	"github.com/peakyragnar/subluminal/pkg/testharness"
 )
 
 // =============================================================================

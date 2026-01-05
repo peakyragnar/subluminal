@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/secret"
+	"github.com/peakyragnar/subluminal/pkg/secret"
 )
 
 func runSecrets(args []string) int {

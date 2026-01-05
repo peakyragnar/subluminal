@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 const policyEnvJSON = "SUB_POLICY_JSON"

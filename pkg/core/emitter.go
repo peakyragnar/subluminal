@@ -13,7 +13,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 const (

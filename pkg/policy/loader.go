@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/canonical"
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/canonical"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 // LoadBundleFile reads a policy bundle from disk.

@@ -3,7 +3,7 @@ package canonical_test
 import (
 	"testing"
 
-	"github.com/subluminal/subluminal/pkg/canonical"
+	"github.com/peakyragnar/subluminal/pkg/canonical"
 )
 
 // =============================================================================

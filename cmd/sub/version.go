@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/subluminal/subluminal/pkg/core"
+	"github.com/peakyragnar/subluminal/pkg/core"
 )
 
 var version = "dev"

@@ -21,11 +21,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/canonical"
-	"github.com/subluminal/subluminal/pkg/core"
-	"github.com/subluminal/subluminal/pkg/event"
-	"github.com/subluminal/subluminal/pkg/policy"
-	"github.com/subluminal/subluminal/pkg/secret"
+	"github.com/peakyragnar/subluminal/pkg/canonical"
+	"github.com/peakyragnar/subluminal/pkg/core"
+	"github.com/peakyragnar/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/policy"
+	"github.com/peakyragnar/subluminal/pkg/secret"
 )
 
 const defaultThrottleBackoffMS = 1000

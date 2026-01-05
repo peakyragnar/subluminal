@@ -33,9 +33,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/adapter/mcpstdio"
-	"github.com/subluminal/subluminal/pkg/core"
-	"github.com/subluminal/subluminal/pkg/secret"
+	"github.com/peakyragnar/subluminal/pkg/adapter/mcpstdio"
+	"github.com/peakyragnar/subluminal/pkg/core"
+	"github.com/peakyragnar/subluminal/pkg/secret"
 )
 
 func main() {

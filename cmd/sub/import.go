@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/subluminal/subluminal/pkg/importer"
+	"github.com/peakyragnar/subluminal/pkg/importer"
 )
 
 func runImport(args []string) int {

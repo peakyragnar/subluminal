@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 var secretPatterns = []*regexp.Regexp{
