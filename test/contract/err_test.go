@@ -163,18 +163,20 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 		"policy_version": "1.0.0",
 		"rules": [
 			{
-				"rule_id": "dedupe-hint",
-				"kind": "dedupe",
+				"rule_id": "reject-with-hint",
+				"kind": "deny",
 				"match": {"tool_name": {"glob": ["hinted_tool"]}},
 				"effect": {
-					"reason_code": "DEDUPE_DUPLICATE",
-					"message": "Duplicate call detected",
-					"dedupe": {
-						"scope": "tool",
-						"window_ms": 60000,
-						"key": "args_hash",
-						"on_duplicate": "BLOCK",
-						"hint_text": "Duplicate call detected; modify args or wait before retrying"
+					"action": "REJECT_WITH_HINT",
+					"reason_code": "TEST_HINT",
+					"message": "Rejected with suggested args for ERR-003",
+					"hint": {
+						"hint_text": "Use suggested args to retry",
+						"hint_kind": "ARG_FIX",
+						"suggested_args": {
+							"mode": "safe",
+							"limit": 5
+						}
 					}
 				}
 			}
@@ -194,24 +196,16 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 
 	h.Initialize()
 
-	// Execute: Call tool twice to trigger dedupe hint
-	args := map[string]any{"bad_param": true}
-	resp1, err := h.CallTool("hinted_tool", args)
+	// Execute: Call tool once to trigger REJECT_WITH_HINT
+	args := map[string]any{"mode": "unsafe", "limit": 1}
+	resp, err := h.CallTool("hinted_tool", args)
 	if err != nil {
-		t.Fatalf("Failed to call tool (first call): %v", err)
-	}
-	resp2, err := h.CallTool("hinted_tool", args)
-	if err != nil {
-		t.Fatalf("Failed to call tool (second call): %v", err)
+		t.Fatalf("Failed to call tool: %v", err)
 	}
 
-	if !testharness.WrapResponse(resp1).IsSuccess() {
-		t.Fatal("ERR-003 FAILED: First call should succeed before dedupe hint triggers")
-	}
-
-	wrapped := testharness.WrapResponse(resp2)
+	wrapped := testharness.WrapResponse(resp)
 	if wrapped.IsSuccess() {
-		t.Fatal("ERR-003 FAILED: Second call should be rejected with hint")
+		t.Fatal("ERR-003 FAILED: Call should be rejected with hint")
 	}
 
 	// Assert: Error code is -32083 (REJECT_WITH_HINT)
@@ -221,39 +215,42 @@ func TestERR003_RejectWithHintUsesCorrectErrorCode(t *testing.T) {
 	}
 
 	// Assert: subluminal.hint object is present with required fields
-	if resp2.Error != nil && resp2.Error.Data != nil {
-		data, _ := resp2.Error.Data.(map[string]any)
-		subluminal, _ := data["subluminal"].(map[string]any)
-		if subluminal != nil {
-			hint, ok := subluminal["hint"].(map[string]any)
-			if !ok {
-				t.Error("ERR-003 FAILED: subluminal.hint must be present for REJECT_WITH_HINT")
-			} else {
-				// Check required hint fields per §3.2.4
-				if _, exists := hint["hint_text"]; !exists {
-					t.Error("ERR-003 FAILED: hint.hint_text is required")
-				}
-				if _, exists := hint["hint_kind"]; !exists {
-					t.Error("ERR-003 FAILED: hint.hint_kind is required")
-				}
+	if resp.Error == nil || resp.Error.Data == nil {
+		t.Fatal("ERR-003 FAILED: error.data must be present for REJECT_WITH_HINT")
+	}
 
-				// Check hint_kind is valid enum
-				hintKind, _ := hint["hint_kind"].(string)
-				validKinds := map[string]bool{
-					"ARG_FIX": true, "BUDGET": true, "RATE": true, "SAFETY": true, "OTHER": true,
-				}
-				if !validKinds[hintKind] {
-					t.Errorf("ERR-003 FAILED: hint.hint_kind %q is not a valid enum value", hintKind)
-				}
+	data, ok := resp.Error.Data.(map[string]any)
+	if !ok {
+		t.Fatal("ERR-003 FAILED: error.data should be an object")
+	}
+	subluminal, ok := data["subluminal"].(map[string]any)
+	if !ok {
+		t.Fatal("ERR-003 FAILED: error.data.subluminal should be present")
+	}
+	hint, ok := subluminal["hint"].(map[string]any)
+	if !ok {
+		t.Fatal("ERR-003 FAILED: subluminal.hint must be present for REJECT_WITH_HINT")
+	}
 
-				// If suggested_args present, must be valid JSON object
-				if suggestedArgs, exists := hint["suggested_args"]; exists && suggestedArgs != nil {
-					if _, ok := suggestedArgs.(map[string]any); !ok {
-						t.Error("ERR-003 FAILED: hint.suggested_args must be a valid JSON object if present")
-					}
-				}
-			}
-		}
+	hintText, ok := hint["hint_text"].(string)
+	if !ok || hintText != "Use suggested args to retry" {
+		t.Errorf("ERR-003 FAILED: hint.hint_text=%q, expected %q", hintText, "Use suggested args to retry")
+	}
+
+	hintKind, ok := hint["hint_kind"].(string)
+	if !ok || hintKind != "ARG_FIX" {
+		t.Errorf("ERR-003 FAILED: hint.hint_kind=%q, expected %q", hintKind, "ARG_FIX")
+	}
+
+	suggestedArgs, ok := hint["suggested_args"].(map[string]any)
+	if !ok {
+		t.Fatal("ERR-003 FAILED: hint.suggested_args must be present and an object")
+	}
+	if suggestedArgs["mode"] != "safe" {
+		t.Errorf("ERR-003 FAILED: hint.suggested_args.mode=%v, expected %q", suggestedArgs["mode"], "safe")
+	}
+	if limit, ok := suggestedArgs["limit"].(float64); !ok || limit != 5 {
+		t.Errorf("ERR-003 FAILED: hint.suggested_args.limit=%v, expected %d", suggestedArgs["limit"], 5)
 	}
 }
 

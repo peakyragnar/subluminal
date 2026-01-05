@@ -230,6 +230,64 @@ func TestRateLimit_TokenBucketDepletes(t *testing.T) {
 	}
 }
 
+func TestRateLimit_RejectWithHintUsesEffectHint(t *testing.T) {
+	bundle := Bundle{
+		Mode: event.RunModeGuardrails,
+		Rules: []Rule{
+			{
+				RuleID: "rate-limit-hint",
+				Kind:   "rate_limit",
+				Match: Match{
+					ToolName: &NameMatch{Glob: []string{"rate_hint_tool"}},
+				},
+				Effect: Effect{
+					Hint: &event.Hint{
+						HintText: "Use suggested args",
+						HintKind: event.HintKindArgFix,
+						SuggestedArgs: map[string]any{
+							"mode":  "safe",
+							"limit": 5,
+						},
+					},
+					RateLimit: &RateLimitEffect{
+						Scope:             "tool",
+						Capacity:          0,
+						RefillTokens:      0,
+						RefillPeriodMS:    0,
+						CostTokensPerCall: 1,
+						OnLimit:           event.DecisionRejectWithHint,
+						HintText:          "Rate limit exceeded",
+					},
+				},
+			},
+		},
+		rateLimit: newRateLimitState(),
+	}
+
+	decision := bundle.Decide("s", "rate_hint_tool", "h")
+	if decision.Action != event.DecisionRejectWithHint {
+		t.Fatalf("Expected REJECT_WITH_HINT, got %s", decision.Action)
+	}
+	if decision.Hint == nil {
+		t.Fatal("Expected hint to be set for REJECT_WITH_HINT decision")
+	}
+	if decision.Hint.HintText != "Use suggested args" {
+		t.Errorf("Expected hint_text %q, got %q", "Use suggested args", decision.Hint.HintText)
+	}
+	if decision.Hint.HintKind != event.HintKindArgFix {
+		t.Errorf("Expected hint_kind %q, got %q", event.HintKindArgFix, decision.Hint.HintKind)
+	}
+	if decision.Hint.SuggestedArgs == nil {
+		t.Fatal("Expected suggested_args to be present")
+	}
+	if mode, ok := decision.Hint.SuggestedArgs["mode"].(string); !ok || mode != "safe" {
+		t.Errorf("Expected suggested_args.mode %q, got %v", "safe", decision.Hint.SuggestedArgs["mode"])
+	}
+	if limit, ok := decision.Hint.SuggestedArgs["limit"].(int); !ok || limit != 5 {
+		t.Errorf("Expected suggested_args.limit %d, got %v", 5, decision.Hint.SuggestedArgs["limit"])
+	}
+}
+
 func TestRateLimit_StatePersistedAcrossCalls(t *testing.T) {
 	bundle := Bundle{
 		Mode: event.RunModeGuardrails,
@@ -424,6 +482,68 @@ func TestDedupe_BlocksDuplicateWithinWindow(t *testing.T) {
 
 	if d2.Action != event.DecisionBlock {
 		t.Errorf("Call 2 should be BLOCK (duplicate), got %s", d2.Action)
+	}
+}
+
+func TestDedupe_RejectWithHintUsesEffectHint(t *testing.T) {
+	bundle := Bundle{
+		Mode: event.RunModeGuardrails,
+		Rules: []Rule{
+			{
+				RuleID: "dedupe-hint",
+				Kind:   "dedupe",
+				Match: Match{
+					ToolName: &NameMatch{Glob: []string{"dup_hint_tool"}},
+				},
+				Effect: Effect{
+					Hint: &event.Hint{
+						HintText: "Use suggested args",
+						HintKind: event.HintKindArgFix,
+						SuggestedArgs: map[string]any{
+							"mode":  "safe",
+							"limit": 5,
+						},
+					},
+					Dedupe: &DedupeEffect{
+						Scope:       "tool",
+						WindowMS:    60000,
+						Key:         "args_hash",
+						OnDuplicate: event.DecisionRejectWithHint,
+						HintText:    "Duplicate call blocked",
+					},
+				},
+			},
+		},
+		dedupe: newDedupeCache(),
+	}
+
+	argsHash := "dup_hash"
+	first := bundle.Decide("s", "dup_hint_tool", argsHash)
+	if first.Action != event.DecisionAllow {
+		t.Fatalf("Call 1 should be ALLOW, got %s", first.Action)
+	}
+
+	decision := bundle.Decide("s", "dup_hint_tool", argsHash)
+	if decision.Action != event.DecisionRejectWithHint {
+		t.Fatalf("Expected REJECT_WITH_HINT, got %s", decision.Action)
+	}
+	if decision.Hint == nil {
+		t.Fatal("Expected hint to be set for REJECT_WITH_HINT decision")
+	}
+	if decision.Hint.HintText != "Use suggested args" {
+		t.Errorf("Expected hint_text %q, got %q", "Use suggested args", decision.Hint.HintText)
+	}
+	if decision.Hint.HintKind != event.HintKindArgFix {
+		t.Errorf("Expected hint_kind %q, got %q", event.HintKindArgFix, decision.Hint.HintKind)
+	}
+	if decision.Hint.SuggestedArgs == nil {
+		t.Fatal("Expected suggested_args to be present")
+	}
+	if mode, ok := decision.Hint.SuggestedArgs["mode"].(string); !ok || mode != "safe" {
+		t.Errorf("Expected suggested_args.mode %q, got %v", "safe", decision.Hint.SuggestedArgs["mode"])
+	}
+	if limit, ok := decision.Hint.SuggestedArgs["limit"].(int); !ok || limit != 5 {
+		t.Errorf("Expected suggested_args.limit %d, got %v", 5, decision.Hint.SuggestedArgs["limit"])
 	}
 }
 

@@ -65,6 +65,7 @@ type Effect struct {
 	Action     event.DecisionAction `json:"action"`
 	ReasonCode string               `json:"reason_code"`
 	Message    string               `json:"message"`
+	Hint       *event.Hint          `json:"hint,omitempty"`
 	Breaker    *BreakerEffect       `json:"breaker,omitempty"`
 	Budget     *BudgetEffect        `json:"budget,omitempty"`
 	RateLimit  *RateLimitEffect     `json:"rate_limit,omitempty"`
@@ -523,24 +524,43 @@ func buildDecision(rule Rule, action event.DecisionAction, fallbackReason, fallb
 	reason := defaultString(rule.Effect.ReasonCode, fallbackReason)
 	summary := defaultString(rule.Effect.Message, fallbackSummary)
 
-	if strings.TrimSpace(rule.RuleID) == "" {
-		return &Decision{
-			Action:     action,
-			RuleID:     nil,
-			ReasonCode: reason,
-			Summary:    summary,
-			Severity:   severity,
-		}
-	}
-
-	ruleID := rule.RuleID
-	return &Decision{
+	decision := &Decision{
 		Action:     action,
-		RuleID:     &ruleID,
+		RuleID:     nil,
 		ReasonCode: reason,
 		Summary:    summary,
 		Severity:   severity,
 	}
+	if action == event.DecisionRejectWithHint {
+		decision.Hint = copyHint(rule.Effect.Hint)
+	}
+
+	if strings.TrimSpace(rule.RuleID) == "" {
+		return decision
+	}
+
+	ruleID := rule.RuleID
+	decision.RuleID = &ruleID
+	return decision
+}
+
+func copyHint(hint *event.Hint) *event.Hint {
+	if hint == nil {
+		return nil
+	}
+
+	copied := *hint
+	if hint.SuggestedArgs != nil {
+		copied.SuggestedArgs = make(map[string]any, len(hint.SuggestedArgs))
+		for key, value := range hint.SuggestedArgs {
+			copied.SuggestedArgs[key] = value
+		}
+	}
+	if hint.RetryAdvice != nil {
+		retryAdvice := *hint.RetryAdvice
+		copied.RetryAdvice = &retryAdvice
+	}
+	return &copied
 }
 
 func attachHint(decision *Decision, hintText string, kind event.HintKind) {
@@ -661,6 +681,9 @@ func (b *Bundle) rateLimitDecision(ruleIndex int, rule Rule, serverName, toolNam
 		Summary:    summary,
 		Severity:   severity,
 	}
+	if action == event.DecisionRejectWithHint {
+		decision.Hint = copyHint(rule.Effect.Hint)
+	}
 	if action == event.DecisionThrottle {
 		decision.BackoffMS = config.BackoffMS
 	}
@@ -725,6 +748,9 @@ func (b *Bundle) evaluateDedupe(rule Rule, serverName, toolName, argsHash string
 		ReasonCode: reason,
 		Summary:    summary,
 		Severity:   severity,
+	}
+	if action == event.DecisionRejectWithHint {
+		decision.Hint = copyHint(rule.Effect.Hint)
 	}
 	if rule.RuleID != "" {
 		ruleID := rule.RuleID
