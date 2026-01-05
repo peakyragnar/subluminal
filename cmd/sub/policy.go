@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/canonical"
-	"github.com/subluminal/subluminal/pkg/event"
-	"github.com/subluminal/subluminal/pkg/policy"
+	"github.com/peakyragnar/subluminal/pkg/canonical"
+	"github.com/peakyragnar/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/policy"
 )
 
 func runPolicy(args []string) int {

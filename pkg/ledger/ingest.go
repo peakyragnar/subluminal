@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 const maxLineBytes = 10 * 1024 * 1024

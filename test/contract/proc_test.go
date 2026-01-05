@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/testharness"
+	"github.com/peakyragnar/subluminal/pkg/testharness"
 )
 
 // =============================================================================
@@ -199,4 +199,3 @@ func processExists(pid int) bool {
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
 }
-

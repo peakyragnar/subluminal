@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/core"
+	"github.com/peakyragnar/subluminal/pkg/core"
 )
 
 func runRun(args []string) int {

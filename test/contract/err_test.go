@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/subluminal/subluminal/pkg/testharness"
+	"github.com/peakyragnar/subluminal/pkg/testharness"
 )
 
 // =============================================================================

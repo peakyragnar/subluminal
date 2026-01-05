@@ -16,7 +16,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 // Identity contains the identity values for a shim instance.

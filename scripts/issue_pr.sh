@@ -202,6 +202,76 @@ Fix the issues and try again."
 done
 
 echo ""
+echo "[issue_pr] Self-review before commit..."
+
+# Run self-review if SELF_REVIEW is enabled (default: enabled)
+SELF_REVIEW="${SELF_REVIEW:-1}"
+REVIEW_ROUNDS="${REVIEW_ROUNDS:-2}"
+
+if [[ "$SELF_REVIEW" == "1" ]]; then
+  for ((review_round=1; review_round<=REVIEW_ROUNDS; review_round++)); do
+    echo "[issue_pr] Review round $review_round/$REVIEW_ROUNDS"
+
+    # Get current diff
+    DIFF="$(git diff HEAD)"
+    if [[ -z "$DIFF" ]]; then
+      DIFF="$(git diff --cached)"
+    fi
+
+    if [[ -z "$DIFF" ]]; then
+      echo "[issue_pr] No changes to review"
+      break
+    fi
+
+    REVIEW_PROMPT="You just implemented a task. Now review your own changes for issues.
+
+## Task
+$TITLE
+
+## Your Changes
+\`\`\`diff
+$DIFF
+\`\`\`
+
+## Review Checklist
+1. Logic errors or edge cases missed
+2. Missing error handling
+3. Missing test coverage for new code paths
+4. Security issues (injection, leaks)
+5. Go conventions violations
+
+If you find issues: fix them and run ./scripts/ci.sh
+If code looks good: output exactly LGTM"
+
+    CODEX_ARGS=(exec --full-auto)
+    if [[ -n "$CODEX_MODEL" ]]; then
+      CODEX_ARGS+=(-m "$CODEX_MODEL")
+    fi
+    CODEX_ARGS+=("$REVIEW_PROMPT")
+
+    REVIEW_OUTPUT="$(codex "${CODEX_ARGS[@]}" 2>&1)" || true
+
+    if echo "$REVIEW_OUTPUT" | grep -q "LGTM"; then
+      echo "[issue_pr] Self-review passed"
+      break
+    fi
+
+    # Check if fixes were made
+    if [[ -n "$(git status --porcelain)" ]]; then
+      echo "[issue_pr] Review made fixes, re-running CI..."
+      if ! "$MAIN_REPO/scripts/ci.sh" > "$CI_LOG" 2>&1; then
+        echo "[issue_pr] CI failed after review fixes, reverting..."
+        git checkout -- .
+        break
+      fi
+      echo "[issue_pr] CI passed after review fixes"
+    else
+      break
+    fi
+  done
+fi
+
+echo ""
 echo "[issue_pr] Committing changes..."
 git add -A
 

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/testharness"
+	"github.com/peakyragnar/subluminal/pkg/testharness"
 )
 
 // shimPath is the path to the shim binary.

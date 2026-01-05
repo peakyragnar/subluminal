@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/subluminal/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/event"
 )
 
 // LintIssue represents a validation finding for policy bundles.

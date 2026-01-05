@@ -21,10 +21,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/subluminal/subluminal/pkg/canonical"
-	"github.com/subluminal/subluminal/pkg/core"
-	"github.com/subluminal/subluminal/pkg/event"
-	"github.com/subluminal/subluminal/pkg/policy"
+	"github.com/peakyragnar/subluminal/pkg/canonical"
+	"github.com/peakyragnar/subluminal/pkg/core"
+	"github.com/peakyragnar/subluminal/pkg/event"
+	"github.com/peakyragnar/subluminal/pkg/policy"
+	"github.com/peakyragnar/subluminal/pkg/secret"
 )
 
 const defaultThrottleBackoffMS = 1000
@@ -46,6 +47,10 @@ type Proxy struct {
 	serverName   string
 	policy       policy.Bundle
 	policyTarget policy.SelectorTarget
+	redactor     *Redactor
+
+	// Secret injection metadata
+	secretEvents []secret.InjectionEvent
 
 	// I/O
 	agentIn  io.Reader
@@ -77,8 +82,13 @@ func NewProxy(
 	source core.Source,
 	agentIn io.Reader,
 	agentOut io.Writer,
+	redactor *Redactor,
+	secretEvents []secret.InjectionEvent,
 ) *Proxy {
 	policyBundle := policy.LoadFromEnv()
+	if redactor == nil {
+		redactor = NewRedactor(nil)
+	}
 	policyTarget := policy.SelectorTarget{
 		Env:     string(identity.Env),
 		AgentID: identity.AgentID,
@@ -93,6 +103,8 @@ func NewProxy(
 		serverName:   serverName,
 		policy:       policyBundle,
 		policyTarget: policyTarget,
+		redactor:     redactor,
+		secretEvents: append([]secret.InjectionEvent{}, secretEvents...),
 		agentIn:      agentIn,
 		agentOut:     agentOut,
 		pendingCalls: make(map[any]*pendingCall),
@@ -105,6 +117,7 @@ func NewProxy(
 func (p *Proxy) Run() error {
 	// Emit run_start
 	p.emitRunStart()
+	p.emitSecretInjectionEvents()
 
 	// Start goroutines with individual completion channels
 	agentDone := make(chan struct{})
@@ -209,7 +222,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 		Args:       args,
 		Target:     p.policyTarget,
 	})
-	decisionSummary := redactSecrets(policyDecision.Summary)
+	decisionSummary := p.redactor.Redact(policyDecision.Summary)
 	decision := event.Decision{
 		Action:   policyDecision.Action,
 		RuleID:   policyDecision.RuleID,
@@ -219,7 +232,7 @@ func (p *Proxy) interceptToolCall(req *JSONRPCRequest, rawLine []byte) bool {
 			ReasonCode: policyDecision.ReasonCode,
 		},
 		BackoffMS: policyDecision.BackoffMS,
-		Hint:      sanitizeHint(policyDecision.Hint),
+		Hint:      p.redactor.SanitizeHint(policyDecision.Hint),
 		Policy:    p.policy.Info,
 	}
 	if decision.Action == event.DecisionThrottle && decision.BackoffMS <= 0 {
@@ -316,9 +329,9 @@ func (p *Proxy) readFromUpstream() {
 		sanitizedLine := line
 		if err := json.Unmarshal(line, &resp); err == nil && resp.ID != nil {
 			if resp.Error != nil {
-				resp.Error.Message = redactSecrets(resp.Error.Message)
+				resp.Error.Message = p.redactor.Redact(resp.Error.Message)
 				if resp.Error.Data != nil {
-					resp.Error.Data = sanitizeValue(resp.Error.Data)
+					resp.Error.Data = p.redactor.SanitizeValue(resp.Error.Data)
 				}
 				if sanitized, err := json.Marshal(resp); err == nil {
 					sanitizedLine = sanitized
@@ -406,6 +419,19 @@ func (p *Proxy) emitRunStart() {
 	p.emitter.Emit(evt)
 }
 
+func (p *Proxy) emitSecretInjectionEvents() {
+	for _, injection := range p.secretEvents {
+		evt := event.SecretInjectionEvent{
+			Envelope:  p.makeEnvelope(event.EventTypeSecretInjection),
+			InjectAs:  injection.InjectAs,
+			SecretRef: injection.SecretRef,
+			Source:    injection.Source,
+			Success:   injection.Success,
+		}
+		p.emitter.Emit(evt)
+	}
+}
+
 func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int, args map[string]any, seq int) {
 	// Create preview (truncated args)
 	// Per Interface-Pack §1.10:
@@ -425,14 +451,17 @@ func (p *Proxy) emitToolCallStart(callID, toolName, argsHash string, bytesIn int
 				// Very large payload - omit preview
 				argsPreview = ""
 				truncated = true
-			} else if originalLen > maxPreviewSize {
-				// Medium payload - truncate with "..."
-				argsPreview = string(b[:maxPreviewSize]) + "..."
-				truncated = true
 			} else {
-				// Small payload - full preview
-				argsPreview = string(b)
-				truncated = false
+				previewSource := p.redactor.Redact(string(b))
+				if len(previewSource) > maxPreviewSize {
+					// Medium payload - truncate with "..."
+					argsPreview = previewSource[:maxPreviewSize] + "..."
+					truncated = true
+				} else {
+					// Small payload - full preview
+					argsPreview = previewSource
+					truncated = false
+				}
 			}
 		}
 	}
@@ -488,10 +517,10 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 				hintKind = string(decision.Hint.HintKind)
 			}
 			if decision.Hint.SuggestedArgs != nil {
-				hint["suggested_args"] = sanitizeValue(decision.Hint.SuggestedArgs)
+				hint["suggested_args"] = p.redactor.SanitizeValue(decision.Hint.SuggestedArgs)
 			}
 			if decision.Hint.RetryAdvice != nil {
-				hint["retry_advice"] = redactSecrets(*decision.Hint.RetryAdvice)
+				hint["retry_advice"] = p.redactor.Redact(*decision.Hint.RetryAdvice)
 			}
 		}
 		if hintText == "" {
@@ -500,7 +529,7 @@ func (p *Proxy) policyErrorData(callID, toolName, argsHash string, decision even
 		if hintText == "" {
 			hintText = "Rejected with hint"
 		}
-		hintText = redactSecrets(hintText)
+		hintText = p.redactor.Redact(hintText)
 		hint["hint_text"] = hintText
 		hint["hint_kind"] = hintKind
 		subluminal["hint"] = hint
