@@ -22,5 +22,5 @@ brew install --HEAD --formula subluminal/Formula/sub.rb
 ### Docker
 
 ```bash
-docker run --rm ghcr.io/peakyragnar/subluminal:latest version
+docker run --rm subluminal/sub:latest version
 ```

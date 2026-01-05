@@ -40,3 +40,4 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
           tags: |
             subluminal/sub:${{ steps.version.outputs.version }}
+            subluminal/sub:latest
